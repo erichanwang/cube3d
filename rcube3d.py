@@ -1,6 +1,9 @@
 import sys, math, pygame
 from pygame.locals import *
 
+from cube_engine import Cube
+import solver
+
 # --- Color definitions (RGB) ---
 color_map = {
     'U': (255, 255, 255),  # white
@@ -10,186 +13,6 @@ color_map = {
     'L': (255, 165, 0),    # orange
     'R': (255, 0, 0)       # red
 }
-
-# --- Helper: Rotate a matrix clockwise ---
-def rotate_matrix_clockwise(mat):
-    return [list(row) for row in zip(*mat[::-1])]
-
-# --- Cube state class ---
-class Cube:
-    def __init__(self, n):
-        self.n = n
-        # Each face is stored as an n×n matrix with its identifying letter.
-        self.faces = {
-            'U': [[ 'U' for _ in range(n)] for _ in range(n)],
-            'D': [[ 'D' for _ in range(n)] for _ in range(n)],
-            'F': [[ 'F' for _ in range(n)] for _ in range(n)],
-            'B': [[ 'B' for _ in range(n)] for _ in range(n)],
-            'L': [[ 'L' for _ in range(n)] for _ in range(n)],
-            'R': [[ 'R' for _ in range(n)] for _ in range(n)]
-        }
-    
-    def print_cube(self, move=""):
-        if move:
-            print(f"\nPerformed move: {move}")
-        else:
-            print("\nCube state:")
-        for face in ['U', 'D', 'F', 'B', 'L', 'R']:
-            print(f"{face} face:")
-            for row in self.faces[face]:
-                print("  " + " ".join(row))
-        print("-" * 30)
-    
-    # --- Standard face moves (clockwise) ---
-    # Front move: when looking directly at F, a clockwise turn
-    def move_F(self):
-        n = self.n
-        self.faces['F'] = rotate_matrix_clockwise(self.faces['F'])
-        temp = self.faces['U'][n-1][:]
-        # U bottom row becomes reversed L right column
-        self.faces['U'][n-1] = list(reversed([self.faces['L'][i][n-1] for i in range(n)]))
-        # L right column becomes D top row
-        for i in range(n):
-            self.faces['L'][i][n-1] = self.faces['D'][0][i]
-        # D top row becomes reversed R left column
-        self.faces['D'][0] = list(reversed([self.faces['R'][i][0] for i in range(n)]))
-        # R left column becomes temp (unchanged order)
-        for i in range(n):
-            self.faces['R'][i][0] = temp[i]
-    
-    # Back move: when looking from the back, a clockwise turn on B
-    def move_B(self):
-        n = self.n
-        self.faces['B'] = rotate_matrix_clockwise(self.faces['B'])
-        temp = self.faces['U'][0][:]
-        # U top row becomes reversed R right column
-        self.faces['U'][0] = list(reversed([self.faces['R'][i][n-1] for i in range(n)]))
-        # R right column becomes D bottom row
-        for i in range(n):
-            self.faces['R'][i][n-1] = self.faces['D'][n-1][i]
-        # D bottom row becomes reversed L left column
-        self.faces['D'][n-1] = list(reversed([self.faces['L'][i][0] for i in range(n)]))
-        # L left column becomes temp
-        for i in range(n):
-            self.faces['L'][i][0] = temp[i]
-    
-    # Left move: when looking at the cube, L face turns clockwise
-    def move_L(self):
-        n = self.n
-        self.faces['L'] = rotate_matrix_clockwise(self.faces['L'])
-        temp = [self.faces['U'][i][0] for i in range(n)]
-        for i in range(n):
-            self.faces['U'][i][0] = self.faces['B'][n-1-i][n-1]
-        for i in range(n):
-            self.faces['B'][n-1-i][n-1] = self.faces['D'][i][0]
-        for i in range(n):
-            self.faces['D'][i][0] = self.faces['F'][i][0]
-        for i in range(n):
-            self.faces['F'][i][0] = temp[i]
-    
-    # Right move: when looking at the cube, R face turns clockwise
-    def move_R(self):
-        n = self.n
-        self.faces['R'] = rotate_matrix_clockwise(self.faces['R'])
-        temp = [self.faces['U'][i][n-1] for i in range(n)]
-        for i in range(n):
-            self.faces['U'][i][n-1] = self.faces['F'][i][n-1]
-        for i in range(n):
-            self.faces['F'][i][n-1] = self.faces['D'][i][n-1]
-        for i in range(n):
-            self.faces['D'][i][n-1] = self.faces['B'][n-1-i][0]
-        for i in range(n):
-            self.faces['B'][n-1-i][0] = temp[i]
-    
-    def move_U(self):
-        n = self.n
-        self.faces['U'] = rotate_matrix_clockwise(self.faces['U'])
-        temp = self.faces['F'][0][:]
-        self.faces['F'][0] = self.faces['R'][0][:]
-        self.faces['R'][0] = self.faces['B'][0][:]
-        self.faces['B'][0] = self.faces['L'][0][:]
-        self.faces['L'][0] = temp
-    
-    def move_D(self):
-        n = self.n
-        self.faces['D'] = rotate_matrix_clockwise(self.faces['D'])
-        temp = self.faces['F'][n-1][:]
-        self.faces['F'][n-1] = self.faces['L'][n-1][:]
-        self.faces['L'][n-1] = self.faces['B'][n-1][:]
-        self.faces['B'][n-1] = self.faces['R'][n-1][:]
-        self.faces['R'][n-1] = temp
-
-    # --- Inverse moves (counterclockwise): three clockwise moves ---
-    def move_F_cc(self):
-        for _ in range(3): self.move_F()
-    def move_B_cc(self):
-        for _ in range(3): self.move_B()
-    def move_L_cc(self):
-        for _ in range(3): self.move_L()
-    def move_R_cc(self):
-        for _ in range(3): self.move_R()
-    def move_U_cc(self):
-        for _ in range(3): self.move_U()
-    def move_D_cc(self):
-        for _ in range(3): self.move_D()
-    
-    # --- Additional moves for 3x3 only ---
-    # M move: rotates the middle vertical slice (affects U, F, D, B)
-    def move_M(self):
-        m = self.n // 2
-        for i in range(self.n):
-            temp = self.faces['U'][i][m]
-            self.faces['U'][i][m] = self.faces['F'][i][m]
-            self.faces['F'][i][m] = self.faces['D'][i][m]
-            self.faces['D'][i][m] = self.faces['B'][i][m]
-            self.faces['B'][i][m] = temp
-
-    def move_M_cc(self):
-        m = self.n // 2
-        for i in range(self.n):
-            temp = self.faces['U'][i][m]
-            self.faces['U'][i][m] = self.faces['B'][i][m]
-            self.faces['B'][i][m] = self.faces['D'][i][m]
-            self.faces['D'][i][m] = self.faces['F'][i][m]
-            self.faces['F'][i][m] = temp
-
-    # E move: rotates the equatorial (middle horizontal) layer (affects F, R, B, L)
-    def move_E(self):
-        m = self.n // 2
-        temp = self.faces['F'][m][:]
-        self.faces['F'][m] = self.faces['R'][m][:]
-        self.faces['R'][m] = self.faces['B'][m][:]
-        self.faces['B'][m] = self.faces['L'][m][:]
-        self.faces['L'][m] = temp
-
-    def move_E_cc(self):
-        m = self.n // 2
-        temp = self.faces['F'][m][:]
-        self.faces['F'][m] = self.faces['L'][m][:]
-        self.faces['L'][m] = self.faces['B'][m][:]
-        self.faces['B'][m] = self.faces['R'][m][:]
-        self.faces['R'][m] = temp
-
-    # S move: rotates the slice parallel to the F face (affects one cell from U, R, D, L)
-    # For 3x3, rotates:
-    #   U bottom-middle, L middle-right, D top-middle, R middle-left.
-    def move_S(self):
-        m = self.n // 2
-        n = self.n
-        temp = self.faces['U'][n-1][m]
-        self.faces['U'][n-1][m] = self.faces['L'][m][n-1]
-        self.faces['L'][m][n-1] = self.faces['D'][0][m]
-        self.faces['D'][0][m] = self.faces['R'][m][0]
-        self.faces['R'][m][0] = temp
-
-    def move_S_cc(self):
-        m = self.n // 2
-        n = self.n
-        temp = self.faces['U'][n-1][m]
-        self.faces['U'][n-1][m] = self.faces['R'][m][0]
-        self.faces['R'][m][0] = self.faces['D'][0][m]
-        self.faces['D'][0][m] = self.faces['L'][m][n-1]
-        self.faces['L'][m][n-1] = temp
 
 # --- 3D rotation & projection functions (manual math) ---
 def rotate_point(p, rot_x, rot_y):
@@ -256,23 +79,25 @@ def accumulate_all_polygons(cube, rot_x, rot_y, screen_width, screen_height, fov
 # --- Main program ---
 def main():
     pygame.init()
-    screen_width, screen_height = 800, 600
+    screen_width, screen_height = 3840, 2160  # 4K UHD
     screen = pygame.display.set_mode((screen_width, screen_height))
     pygame.display.set_caption("3D Rubik's Cube Emulator (Pygame Only)")
     clock = pygame.time.Clock()
-    
-    # Perspective settings
-    fov = 256
+
+    # Perspective settings, scaled up from the original 800x600 baseline so
+    # the cube occupies the same fraction of the screen at 4K.
+    scale = screen_width / 800
+    fov = 256 * scale
     viewer_distance = 4
-    
+
     cube_dim = 3
     cube = Cube(cube_dim)
-    
+
     # Default camera parameters
     default_rot_x, default_rot_y = 25, -30
     default_viewer_distance = 4
     rot_x, rot_y = default_rot_x, default_rot_y
-    
+
     # Mouse control flags
     rotating = False    # left-click drag rotates view (inverted)
     zooming = False     # middle-click drag adjusts zoom
@@ -280,7 +105,7 @@ def main():
     last_mouse_pos = (0, 0)
     zoom_start_dist = viewer_distance
     face_drag_start = None
-    face_drag_threshold = 30  # pixels
+    face_drag_threshold = 30 * scale  # pixels
     
     running = True
     while running:
@@ -322,15 +147,10 @@ def main():
                         mods = pygame.key.get_mods()
                         if abs(dx) > face_drag_threshold:
                             if dx > 0:
-                                if mods & KMOD_SHIFT:
-                                    cube.move_F_cc(); move = "F'"
-                                else:
-                                    cube.move_F(); move = "F"
+                                move = "F'" if (mods & KMOD_SHIFT) else "F"
                             else:
-                                if mods & KMOD_SHIFT:
-                                    cube.move_F(); move = "F"
-                                else:
-                                    cube.move_F_cc(); move = "F'"
+                                move = "F" if (mods & KMOD_SHIFT) else "F'"
+                            cube.apply_move(move)
                             print(f"\nPerformed face drag move: {move}")
                             cube.print_cube(move)
                     face_drag = False
@@ -356,52 +176,41 @@ def main():
                     viewer_distance = default_viewer_distance
                     print("\nCamera orientation reset.")
                 elif event.key == K_u:
-                    if mods & KMOD_SHIFT:
-                        cube.move_U_cc(); move = "U'"
-                    else:
-                        cube.move_U(); move = "U"
+                    move = "U'" if (mods & KMOD_SHIFT) else "U"
                 elif event.key == K_d:
-                    if mods & KMOD_SHIFT:
-                        cube.move_D_cc(); move = "D'"
-                    else:
-                        cube.move_D(); move = "D"
+                    move = "D'" if (mods & KMOD_SHIFT) else "D"
                 elif event.key == K_f:
-                    if mods & KMOD_SHIFT:
-                        cube.move_F_cc(); move = "F'"
-                    else:
-                        cube.move_F(); move = "F"
+                    move = "F'" if (mods & KMOD_SHIFT) else "F"
                 elif event.key == K_b:
-                    if mods & KMOD_SHIFT:
-                        cube.move_B_cc(); move = "B'"
-                    else:
-                        cube.move_B(); move = "B"
+                    move = "B'" if (mods & KMOD_SHIFT) else "B"
                 elif event.key == K_l:
-                    if mods & KMOD_SHIFT:
-                        cube.move_L_cc(); move = "L'"
-                    else:
-                        cube.move_L(); move = "L"
+                    move = "L'" if (mods & KMOD_SHIFT) else "L"
                 elif event.key == K_r:
-                    if mods & KMOD_SHIFT:
-                        cube.move_R_cc(); move = "R'"
-                    else:
-                        cube.move_R(); move = "R"
+                    move = "R'" if (mods & KMOD_SHIFT) else "R"
                 elif event.key == K_m:
-                    if mods & KMOD_SHIFT:
-                        cube.move_M_cc() if hasattr(cube, "move_M_cc") else cube.move_M(); move = "M'"
-                    else:
-                        cube.move_M(); move = "M"
+                    move = "M'" if (mods & KMOD_SHIFT) else "M"
                 elif event.key == K_e:
-                    if mods & KMOD_SHIFT:
-                        cube.move_E_cc() if hasattr(cube, "move_E_cc") else cube.move_E(); move = "E'"
-                    else:
-                        cube.move_E(); move = "E"
+                    move = "E'" if (mods & KMOD_SHIFT) else "E"
                 elif event.key == K_s:
-                    if mods & KMOD_SHIFT:
-                        cube.move_S_cc(); move = "S'"
+                    move = "S'" if (mods & KMOD_SHIFT) else "S"
+                elif event.key == K_SPACE:
+                    seq = solver.scramble(cube)
+                    print(f"\nScrambled with {len(seq)} moves: {' '.join(seq)}")
+                    cube.print_cube()
+                elif event.key == K_RETURN:
+                    if cube_dim == 3:
+                        sol = solver.solve(cube)
+                        print(f"\nSolved in {len(sol)} moves: {' '.join(sol)}")
+                        cube.print_cube()
                     else:
-                        cube.move_S(); move = "S"
+                        print("\nSolver only supports 3x3x3 cubes.")
+
                 if move:
-                    cube.print_cube(move)
+                    if move[0] in ('M', 'E', 'S') and cube_dim % 2 == 0:
+                        print(f"\n{move[0]} moves require an odd-sized cube (current size {cube_dim}).")
+                    else:
+                        cube.apply_move(move)
+                        cube.print_cube(move)
         
         # --- Rendering ---
         screen.fill((50, 50, 50))
