@@ -198,12 +198,12 @@ def main():
                     print(f"\nScrambled with {len(seq)} moves: {' '.join(seq)}")
                     cube.print_cube()
                 elif event.key == K_RETURN:
-                    if cube_dim == 3:
+                    if cube_dim in (2, 3):
                         sol = solver.solve(cube)
                         print(f"\nSolved in {len(sol)} moves: {' '.join(sol)}")
                         cube.print_cube()
                     else:
-                        print("\nSolver only supports 3x3x3 cubes.")
+                        print("\nSolver only supports 2x2x2 and 3x3x3 cubes.")
 
                 if move:
                     if move[0] in ('M', 'E', 'S') and cube_dim % 2 == 0:

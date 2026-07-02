@@ -458,11 +458,132 @@ def _solve_last_layer(cube, log=None):
     return path
 
 
+# --- 2x2x2 solver: U-corners via full-6-face BFS, D-corners via LL table ---
+#
+# _insert_piece restricts its fallback to {B,F,L,R,D} (no U), which cannot
+# reach some 2x2 U-corner slots (e.g. UBR→UBL with only a U2 needed). For
+# 2x2 we instead use _bfs_place_dedup with all 6 faces; already-placed
+# corners are protected by the dedup key mechanism inside that function.
+
+def _2x2_d_groups():
+    return [g for g in Cube(2).piece_groups() if any(f == 'D' for f, i, j in g)]
+
+
+def _2x2_d_key(cube, d_groups):
+    return tuple(cube.faces[f][i][j] for g in d_groups for f, i, j in g)
+
+
+_2x2_ll_cache = {}
+
+
+def _build_2x2_ll_table():
+    from collections import deque
+    d_groups = _2x2_d_groups()
+    solved = Cube(2)
+    start_key = _2x2_d_key(solved, d_groups)
+    table = {start_key: None}
+    queue = deque([(solved.copy(), start_key)])
+    seen = {start_key}
+    while queue:
+        c, ck = queue.popleft()
+        for name, seq in _LL_GENERATORS.items():
+            nc = c.copy()
+            nc.apply_moves(seq)
+            nk = _2x2_d_key(nc, d_groups)
+            if nk not in seen:
+                seen.add(nk)
+                table[nk] = (ck, name)
+                queue.append((nc, nk))
+    return table, d_groups
+
+
+def _2x2_ll_table():
+    if not _2x2_ll_cache:
+        table, d_groups = _build_2x2_ll_table()
+        _2x2_ll_cache['table'] = table
+        _2x2_ll_cache['d_groups'] = d_groups
+    return _2x2_ll_cache
+
+
+_2x2_all_gens = []
+for _f2 in ['U', 'D', 'F', 'B', 'L', 'R']:
+    _2x2_all_gens += [_f2, _f2 + "'", _f2 + '2']
+
+# {R, F, D} generate the full 2x2 group while keeping UBL fixed.
+# Effective branching factor with same-face pruning = 6 (vs 12 with all 18),
+# giving 6^9 ≈ 10M nodes vs 12^9 ≈ 5B — a ~500× speedup.
+_2x2_rfd_gens = ['R', "R'", 'R2', 'F', "F'", 'F2', 'D', "D'", 'D2']
+_2x2_anchor_label = frozenset({'U', 'B', 'L'})
+
+
+def _solve_2x2(cube, log=None):
+    all_moves = []
+
+    # Step 1: place the UBL anchor corner first (unrestricted, fast — at most
+    # 5 moves for any 1-corner placement on a 2x2).
+    anchor_home = _groups_by_label(cube)[_2x2_anchor_label]
+    if not _slot_correct(cube, anchor_home):
+        found = _bfs_place(cube, anchor_home, [], max_depth=5,
+                           generators=_2x2_all_gens)
+        if found is None:
+            raise RuntimeError("failed to place 2x2 UBL anchor (bug)")
+        cube.apply_moves(found)
+        all_moves.extend(found)
+        if log:
+            log(f"placed UBL: {' '.join(found)}")
+
+    # Step 2: place the remaining 3 U corners using {R, F, D} only.
+    # {R, F, D} never touch UBL, so the anchor stays correct for free and
+    # the IDDFS branching factor drops from 12 to 6 (9 generators, same-face
+    # pruning leaves 6), making depth-9 searches ~500× faster.
+    labels = _groups_by_label(cube)
+    u_corners = [l for l in labels if 'U' in l and l != _2x2_anchor_label]
+    placed_home_groups = [anchor_home]
+
+    for label in u_corners:
+        home_group = _groups_by_label(cube)[label]
+        if _slot_correct(cube, home_group):
+            placed_home_groups.append(home_group)
+            continue
+        found = _bfs_place(cube, home_group, placed_home_groups, max_depth=9,
+                           generators=_2x2_rfd_gens)
+        if found is None:
+            raise RuntimeError(f"failed to place 2x2 U corner {sorted(label)}")
+        cube.apply_moves(found)
+        all_moves.extend(found)
+        if log:
+            log(f"placed {''.join(sorted(label))}: {' '.join(found) if found else '(ok)'}")
+        placed_home_groups.append(_groups_by_label(cube)[label])
+
+    info = _2x2_ll_table()
+    table, d_groups = info['table'], info['d_groups']
+    key = _2x2_d_key(cube, d_groups)
+    if key not in table:
+        raise RuntimeError("2x2 D-corner state missing from lookup table (bug)")
+
+    path = []
+    while table[key] is not None:
+        prev_key, name = table[key]
+        path += _LL_GENERATORS[_LL_INVERSE_GEN[name]]
+        key = prev_key
+
+    cube.apply_moves(path)
+    all_moves.extend(path)
+    if not cube.is_solved():
+        raise RuntimeError("2x2 solver finished but cube is not solved (bug)")
+    if log:
+        log(f"solved D-corners: {' '.join(path) if path else '(ok)'}")
+    return all_moves
+
+
 def solve(cube, log=None):
-    """Return a list of moves that solves `cube` (a 3x3 Cube). The cube's
-    own state is left solved as a side effect (moves are applied as found)."""
+    """Return a list of moves that solves `cube`. The cube's own state is
+    left solved as a side effect (moves are applied as found)."""
+    if cube.n == 2:
+        return _solve_2x2(cube, log=log)
     if cube.n != 3:
-        raise ValueError("solve() only supports 3x3x3 cubes")
+        raise ValueError(
+            f"solve() supports 2x2x2 and 3x3x3 cubes (got {cube.n}x{cube.n}x{cube.n})")
 
     labels = _groups_by_label(cube)
     edge_labels = [l for l in labels if len(labels[l]) == 2]
