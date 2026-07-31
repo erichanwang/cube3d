@@ -1,6 +1,14 @@
+export type MoveFace =
+  | 'R' | 'L' | 'U' | 'D' | 'F' | 'B'
+  | 'M' | 'E' | 'S'
+  | 'r' | 'l' | 'u' | 'd' | 'f' | 'b'
+  | 'x' | 'y' | 'z';
+
 export interface CubeMove {
-  face: 'R' | 'L' | 'U' | 'D' | 'F' | 'B';
+  face: MoveFace;
   prime?: boolean;
+  /** Half turn when present; omitted means one quarter turn. */
+  turns?: 1 | 2;
 }
 
 export interface ResearchFieldNodeConfig {

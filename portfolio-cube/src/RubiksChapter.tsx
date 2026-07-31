@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
-import type { CubeMove } from './types';
+import type { CubeMove, MoveFace } from './types';
 import {
   applyMoves,
   isSolved,
@@ -78,14 +78,26 @@ interface CubeletRuntime {
   matrix: DOMMatrix;
 }
 
-const MOVE_DEFS = {
-  R: { axis: 'X', pick: (cube: CubeletRuntime) => cube.x === 1, sign: -1 },
-  L: { axis: 'X', pick: (cube: CubeletRuntime) => cube.x === -1, sign: 1 },
-  U: { axis: 'Y', pick: (cube: CubeletRuntime) => cube.y === -1, sign: 1 },
-  D: { axis: 'Y', pick: (cube: CubeletRuntime) => cube.y === 1, sign: -1 },
-  F: { axis: 'Z', pick: (cube: CubeletRuntime) => cube.z === 1, sign: 1 },
-  B: { axis: 'Z', pick: (cube: CubeletRuntime) => cube.z === -1, sign: -1 },
-} as const;
+const MOVE_DEFS: Record<MoveFace, { axis: 'X' | 'Y' | 'Z'; pick: (cube: CubeletRuntime) => boolean; sign: number }> = {
+  R: { axis: 'X', pick: (cube) => cube.x === 1, sign: -1 },
+  L: { axis: 'X', pick: (cube) => cube.x === -1, sign: 1 },
+  U: { axis: 'Y', pick: (cube) => cube.y === -1, sign: 1 },
+  D: { axis: 'Y', pick: (cube) => cube.y === 1, sign: -1 },
+  F: { axis: 'Z', pick: (cube) => cube.z === 1, sign: 1 },
+  B: { axis: 'Z', pick: (cube) => cube.z === -1, sign: -1 },
+  M: { axis: 'X', pick: (cube) => cube.x === 0, sign: 1 },
+  E: { axis: 'Y', pick: (cube) => cube.y === 0, sign: -1 },
+  S: { axis: 'Z', pick: (cube) => cube.z === 0, sign: 1 },
+  r: { axis: 'X', pick: (cube) => cube.x >= 0, sign: -1 },
+  l: { axis: 'X', pick: (cube) => cube.x <= 0, sign: 1 },
+  u: { axis: 'Y', pick: (cube) => cube.y <= 0, sign: 1 },
+  d: { axis: 'Y', pick: (cube) => cube.y >= 0, sign: -1 },
+  f: { axis: 'Z', pick: (cube) => cube.z >= 0, sign: 1 },
+  b: { axis: 'Z', pick: (cube) => cube.z <= 0, sign: -1 },
+  x: { axis: 'X', pick: () => true, sign: -1 },
+  y: { axis: 'Y', pick: () => true, sign: 1 },
+  z: { axis: 'Z', pick: () => true, sign: 1 },
+};
 
 function rotateGrid(axis: string, sign: number, cube: CubeletRuntime) {
   const { x, y, z } = cube;
@@ -101,8 +113,9 @@ function stickerColor(face: typeof FACES[number], x: number, y: number, z: numbe
         : face === 'b' ? z === -1
           : face === 'r' ? x === 1
             : x === -1;
-  // inner faces are the dark cube core, kept thin by the tight gaps
-  return visible ? COLORS[face] : '#141519';
+  // A stickerless cube still has colored plastic only on its exposed faces;
+  // concealed faces use the same neutral plastic body instead of a black core.
+  return visible ? COLORS[face] : '#e9ebe7';
 }
 
 const coordinateKey = (coordinate: readonly number[]) => coordinate.join(',');
@@ -179,14 +192,23 @@ export function RubiksChapter() {
     const cube = cubeRef.current;
     if (!cube) return;
     const targets = new Set<string>();
+    const current = cubeState.current;
+    const addEdgePiece = (piece: number) => {
+      const position = current.ep.indexOf(piece);
+      if (position >= 0) targets.add(coordinateKey(EDGE_COORDS[position]!));
+    };
+    const addCornerPiece = (piece: number) => {
+      const position = current.cp.indexOf(piece);
+      if (position >= 0) targets.add(coordinateKey(CORNER_COORDS[position]!));
+    };
     if (planned?.stage === 'Cross') {
-      CROSS_EDGES.forEach((piece) => targets.add(coordinateKey(EDGE_COORDS[piece]!)));
+      CROSS_EDGES.forEach(addEdgePiece);
     } else if (planned?.stage === 'F2L' && planned.slot !== undefined) {
       const slot = SLOTS[planned.slot]!;
-      targets.add(coordinateKey(CORNER_COORDS[slot.corner]!));
-      targets.add(coordinateKey(EDGE_COORDS[slot.edge]!));
+      addCornerPiece(slot.corner);
+      addEdgePiece(slot.edge);
     } else if (planned?.stage === 'ZBLS') {
-      LL_EDGES.forEach((piece) => targets.add(coordinateKey(EDGE_COORDS[piece]!)));
+      LL_EDGES.forEach(addEdgePiece);
     }
     cube.querySelectorAll<HTMLElement>('.xp-cubelet').forEach((cubelet) => {
       const key = coordinateKey([
@@ -226,7 +248,11 @@ export function RubiksChapter() {
     const definition = MOVE_DEFS[move.face];
     const sign = definition.sign * (move.prime ? -1 : 1) * direction;
     const layer = runtimes.current.filter(definition.pick);
-    cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : { face: move.face, prime: !move.prime }]);
+    cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : {
+      face: move.face,
+      prime: !move.prime,
+      turns: move.turns,
+    }]);
     let transitionEnd: ((event: TransitionEvent) => void) | null = null;
     let transformStarted = false;
     const bake = (force = false) => {
@@ -243,8 +269,9 @@ export function RubiksChapter() {
       }
       flushMove.current = null;
       for (const item of layer) {
-        item.matrix = new DOMMatrix(`rotate${definition.axis}(${sign * 90}deg)`).multiply(item.matrix);
-        rotateGrid(definition.axis, sign, item);
+        const turns = move.turns ?? 1;
+        item.matrix = new DOMMatrix(`rotate${definition.axis}(${sign * 90 * turns}deg)`).multiply(item.matrix);
+        for (let turn = 0; turn < turns; turn += 1) rotateGrid(definition.axis, sign, item);
         item.el.dataset.x = String(item.x);
         item.el.dataset.y = String(item.y);
         item.el.dataset.z = String(item.z);
@@ -275,7 +302,7 @@ export function RubiksChapter() {
     pivot.addEventListener('transitionend', transitionEnd);
     const frame = requestAnimationFrame(() => {
       transformStarted = true;
-      pivot.style.transform = `rotate${definition.axis}(${sign * 90}deg)`;
+      pivot.style.transform = `rotate${definition.axis}(${sign * 90 * (move.turns ?? 1)}deg)`;
       // The transition is the source of truth; this timeout only recovers if a
       // browser drops transitionend while the tab is backgrounded/throttled.
       finishTimer.current = window.setTimeout(() => bake(), STEP_MS + 16);
@@ -592,19 +619,21 @@ export function RubiksChapter() {
 
   const renderPlanGroup = (group: (typeof stageGroups)[number], key: number) => {
     const isF2L = group.stage === 'F2L';
+    const isZBLL = group.stage === 'ZBLL';
     return (
-      <div key={key} className={`xp-cube-plan-row${isF2L ? ' xp-cube-plan-row--f2l' : ''}${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
+      <div key={key} className={`xp-cube-plan-row${isF2L ? ' xp-cube-plan-row--f2l' : ''}${isZBLL ? ' xp-cube-plan-row--zbll' : ''}${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
+
         <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
         <span className="xp-cube-plan-moves">
-          {group.moves.map(({ move, index }) => (solved || index < moveCount) && (
+          {group.moves.map(({ move, index }) => (
             <button
               key={index}
               type="button"
               className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}
               onClick={() => seekTo(index + 1)}
-              aria-label={`Go to move ${index + 1}: ${move.face}${move.prime ? ' prime' : ''}`}
+              aria-label={`Go to move ${index + 1}: ${move.face}${move.turns === 2 ? ' twice' : move.prime ? ' prime' : ''}`}
             >
-              {move.face}{move.prime ? '′' : ''}
+              {move.face}{move.turns === 2 ? '2' : move.prime ? '′' : ''}
             </button>
           ))}
         </span>
@@ -616,8 +645,7 @@ export function RubiksChapter() {
     <section ref={sectionRef} className="xp-cube-chapter" aria-labelledby="cube-title">
       <div className="xp-cube-frame">
         <div className="xp-cube-copy">
-          <p className="xp-mono">Rubik's Cube Simulation</p>
-          <h3 id="cube-title">A solve you can watch think.</h3>
+          <h3 id="cube-title">cube3D</h3>
           <p>Starts on a random scramble and solves it by CFOP — white cross, three F2L pairs, then ZBLS and ZBLL for the last layer. One quarter-turn at a time; drag the cube to look around.</p>
           <div className="xp-cube-actions">
             <button type="button" onClick={scramble} disabled={Boolean(reduceMotion)}>Scramble</button>
@@ -628,7 +656,7 @@ export function RubiksChapter() {
           <div className="xp-cube-scramble" aria-hidden="true">
             <span className="xp-cube-tape-label">Scramble</span>
             <span className="xp-cube-tape">
-              {scrambleSeq.map((move, i) => <b key={i}>{move.face}{move.prime ? '′' : ''}</b>)}
+              {scrambleSeq.map((move, i) => <b key={i}>{move.face}{move.turns === 2 ? '2' : move.prime ? '′' : ''}</b>)}
             </span>
           </div>
         )}

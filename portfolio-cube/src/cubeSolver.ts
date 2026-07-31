@@ -1,4 +1,4 @@
-import type { CubeMove } from './types';
+import type { CubeMove, MoveFace } from './types';
 import { F2L_TABLE, ZBLS_TABLE } from './cubeTables.ts';
 import { lookupZBLLCase } from './zbllHashmap.ts';
 import type { ZBLLCase } from './zbllTable.ts';
@@ -86,8 +86,7 @@ const edgePerm: Uint8Array[] = [];
 const edgeFlip: Uint8Array[] = [];
 
 for (let m = 0; m < MOVES.length; m += 1) {
-  const move = MOVES[m]!;
-  const def = MOVE_DEFS[move.face];
+  const move = MOVES[m]!;    const def = MOVE_DEFS[move.face as Face];
   const sign = def.sign * (move.prime ? -1 : 1);
   const cPerm = new Uint8Array(8);
   const cTwist = new Uint8Array(8 * 3);
@@ -116,6 +115,108 @@ for (let m = 0; m < MOVES.length; m += 1) {
   edgeFlip.push(eFlip);
 }
 
+export interface DerivedMoveTable {
+  cornerPerm: Uint8Array;
+  cornerTwist: Uint8Array;
+  edgePerm: Uint8Array;
+  edgeFlip: Uint8Array;
+}
+
+/** Derive a slice table from the same coordinate geometry as outer turns. */
+function deriveSliceTable(
+  axis: 0 | 1 | 2,
+  layer: (v: Vec) => boolean,
+  sign: number,
+  flips: boolean,
+): DerivedMoveTable {
+  const cPerm = new Uint8Array(8);
+  const cTwist = new Uint8Array(8 * 3);
+  const ePerm = new Uint8Array(12);
+  const eFlip = new Uint8Array(12);
+  CORNER_COORDS.forEach((v, p) => {
+    const moved = layer(v);
+    cPerm[p] = moved ? CORNER_INDEX.get(keyOf(rotate(axis, sign, v)))! : p;
+    for (let c = 0; c < 3; c += 1) {
+      if (!moved) { cTwist[p * 3 + c] = c; continue; }
+      const unit: Vec = [TWIST_AXIS[c] === 0 ? 1 : 0, TWIST_AXIS[c] === 1 ? 1 : 0, TWIST_AXIS[c] === 2 ? 1 : 0];
+      const spun = rotate(axis, sign, unit);
+      cTwist[p * 3 + c] = AXIS_TWIST[spun.findIndex((n) => n !== 0)]!;
+    }
+  });
+  EDGE_COORDS.forEach((v, p) => {
+    const moved = layer(v);
+    ePerm[p] = moved ? EDGE_INDEX.get(keyOf(rotate(axis, sign, v)))! : p;
+    eFlip[p] = moved && flips ? 1 : 0;
+  });
+  return { cornerPerm: cPerm, cornerTwist: cTwist, edgePerm: ePerm, edgeFlip: eFlip };
+}
+
+const SLICE_TABLES: Record<'M' | 'E' | 'S', DerivedMoveTable> = {
+  // Singmaster M follows L, E follows D, and S follows F.
+  M: deriveSliceTable(0, (v) => v[0] === 0, 1, true),
+  E: deriveSliceTable(1, (v) => v[1] === 0, -1, false),
+  S: deriveSliceTable(2, (v) => v[2] === 0, 1, true),
+};
+
+function composeTables(first: DerivedMoveTable, second: DerivedMoveTable): DerivedMoveTable {
+  const cornerPerm = new Uint8Array(8);
+  const cornerTwist = new Uint8Array(24);
+  const edgePerm = new Uint8Array(12);
+  const edgeFlip = new Uint8Array(12);
+  for (let p = 0; p < 8; p += 1) {
+    const middle = first.cornerPerm[p]!;
+    cornerPerm[p] = second.cornerPerm[middle]!;
+    for (let o = 0; o < 3; o += 1) {
+      cornerTwist[p * 3 + o] = second.cornerTwist[middle * 3 + first.cornerTwist[p * 3 + o]!]!;
+    }
+  }
+  for (let p = 0; p < 12; p += 1) {
+    const middle = first.edgePerm[p]!;
+    edgePerm[p] = second.edgePerm[middle]!;
+    edgeFlip[p] = first.edgeFlip[p]! ^ second.edgeFlip[middle]!;
+  }
+  return { cornerPerm, cornerTwist, edgePerm, edgeFlip };
+}
+
+const OUTER_TABLES: Record<Face, DerivedMoveTable> = Object.fromEntries(
+  FACES.map((face, i) => [face, {
+    cornerPerm: cornerPerm[i * 2]!,
+    cornerTwist: cornerTwist[i * 2]!,
+    edgePerm: edgePerm[i * 2]!,
+    edgeFlip: edgeFlip[i * 2]!,
+  }]),
+) as Record<Face, DerivedMoveTable>;
+
+function inverseTable(table: DerivedMoveTable): DerivedMoveTable {
+  return composeTables(table, composeTables(table, table));
+}
+
+const EXTENDED_BASE_TABLES: Record<MoveFace, DerivedMoveTable> = {
+  ...OUTER_TABLES,
+  M: SLICE_TABLES.M,
+  E: SLICE_TABLES.E,
+  S: SLICE_TABLES.S,
+  r: composeTables(OUTER_TABLES.R, inverseTable(SLICE_TABLES.M)),
+  l: composeTables(OUTER_TABLES.L, SLICE_TABLES.M),
+  u: composeTables(OUTER_TABLES.U, inverseTable(SLICE_TABLES.E)),
+  d: composeTables(OUTER_TABLES.D, SLICE_TABLES.E),
+  f: composeTables(OUTER_TABLES.F, SLICE_TABLES.S),
+  b: composeTables(OUTER_TABLES.B, inverseTable(SLICE_TABLES.S)),
+  x: composeTables(composeTables(OUTER_TABLES.R, inverseTable(SLICE_TABLES.M)), inverseTable(OUTER_TABLES.L)),
+  y: composeTables(composeTables(OUTER_TABLES.U, inverseTable(SLICE_TABLES.E)), inverseTable(OUTER_TABLES.D)),
+  z: composeTables(composeTables(OUTER_TABLES.F, SLICE_TABLES.S), inverseTable(OUTER_TABLES.B)),
+};
+
+/** Exposed so scripts can search the same geometry with slice/wide moves. */
+export const EXTENDED_MOVES: CubeMove[] = [
+  ...MOVES,
+  ...(['M', 'E', 'S', 'r', 'l', 'u', 'd', 'f', 'b', 'x', 'y', 'z'] as const).flatMap((face) => [{ face }, { face, prime: true }]),
+];
+export const EXTENDED_MOVE_TABLES: DerivedMoveTable[] = EXTENDED_MOVES.map((move) => {
+  const base = EXTENDED_BASE_TABLES[move.face];
+  return move.prime ? inverseTable(base) : base;
+});
+
 /** Exposed so scripts/gen-cube-tables.mjs searches with the same geometry. */
 export const MOVE_TABLES = { cornerPerm, cornerTwist, edgePerm, edgeFlip };
 
@@ -139,32 +240,61 @@ export function cloneState(s: CubeState): CubeState {
   return { cp: s.cp.slice(), co: s.co.slice(), ep: s.ep.slice(), eo: s.eo.slice() };
 }
 
-export function applyMoveIndex(s: CubeState, m: number): CubeState {
-  const cPerm = cornerPerm[m]!;
-  const cTwist = cornerTwist[m]!;
-  const ePerm = edgePerm[m]!;
-  const eFlip = edgeFlip[m]!;
+function applyTable(s: CubeState, table: DerivedMoveTable): CubeState {
   const out: CubeState = { cp: new Uint8Array(8), co: new Uint8Array(8), ep: new Uint8Array(12), eo: new Uint8Array(12) };
   for (let p = 0; p < 8; p += 1) {
-    const q = cPerm[p]!;
+    const q = table.cornerPerm[p]!;
     out.cp[q] = s.cp[p]!;
-    out.co[q] = cTwist[p * 3 + s.co[p]!]!;
+    out.co[q] = table.cornerTwist[p * 3 + s.co[p]!]!;
   }
   for (let p = 0; p < 12; p += 1) {
-    const q = ePerm[p]!;
+    const q = table.edgePerm[p]!;
     out.ep[q] = s.ep[p]!;
-    out.eo[q] = s.eo[p]! ^ eFlip[p]!;
+    out.eo[q] = s.eo[p]! ^ table.edgeFlip[p]!;
   }
   return out;
 }
 
+export function applyMoveIndex(s: CubeState, m: number): CubeState {
+  return applyTable(s, {
+    cornerPerm: cornerPerm[m]!,
+    cornerTwist: cornerTwist[m]!,
+    edgePerm: edgePerm[m]!,
+    edgeFlip: edgeFlip[m]!,
+  });
+}
+
+function applyTableTurns(state: CubeState, table: DerivedMoveTable, turns: number): CubeState {
+  let out = state;
+  for (let i = 0; i < turns; i += 1) out = applyTable(out, table);
+  return out;
+}
+
 export function moveIndex(move: CubeMove): number {
-  return FACES.indexOf(move.face) * 2 + (move.prime ? 1 : 0);
+  const index = FACES.indexOf(move.face as Face);
+  if (index < 0) throw new Error(`moveIndex only accepts outer turns: ${move.face}`);
+  return index * 2 + (move.prime ? 1 : 0);
+}
+
+function applyExtendedMove(state: CubeState, move: CubeMove): CubeState {
+  const prime = Boolean(move.prime);
+  const turns = move.turns ?? 1;
+  const quarterTurns = turns % 4;
+  if (quarterTurns === 0) return state;
+  if (FACES.includes(move.face as Face)) {
+    const quarter = { face: move.face as Face, prime: prime && turns !== 2 };
+    let out = state;
+    for (let i = 0; i < quarterTurns; i += 1) out = applyMoveIndex(out, moveIndex(quarter));
+    return out;
+  }
+  const base = EXTENDED_BASE_TABLES[move.face];
+  const table = prime ? inverseTable(base) : base;
+  return applyTableTurns(state, table, quarterTurns);
 }
 
 export function applyMoves(state: CubeState, moves: CubeMove[]): CubeState {
   let out = state;
-  for (const move of moves) out = applyMoveIndex(out, moveIndex(move));
+  for (const move of moves) out = applyExtendedMove(out, move);
   return out;
 }
 
@@ -246,14 +376,43 @@ export const zbllKey = (s: CubeState) => `${llTwistKey(s)}|${llCornersKey(s)}|${
 // ── move strings ────────────────────────────────────────────────────────
 export function parseAlg(alg: string): CubeMove[] {
   if (!alg) return [];
-  return alg.split(' ').filter(Boolean).flatMap((token) => {
-    const face = token[0] as Face;
-    const prime = token.endsWith("'");
-    const turns = token.endsWith('2') ? 2 : 1;
-    return Array.from({ length: turns }, () => prime ? { face, prime: true } : { face });
+  return alg.split(/\s+/).filter(Boolean).map((token) => {
+    const base = token.replace(/2$/, '').replace(/'$/, '');
+    const rawFace = base.endsWith('w') ? base[0]!.toLowerCase() : base;
+    const face = rawFace as MoveFace;
+    if (!['R', 'L', 'U', 'D', 'F', 'B', 'M', 'E', 'S', 'r', 'l', 'u', 'd', 'f', 'b', 'x', 'y', 'z'].includes(face)) {
+      throw new Error(`Unsupported algorithm move: ${token}`);
+    }
+    return {
+      face,
+      prime: token.endsWith("'") || undefined,
+      turns: token.endsWith('2') ? 2 : undefined,
+    };
   });
 }
-export const formatAlg = (moves: CubeMove[]) => moves.map((m) => `${m.face}${m.prime ? "'" : ''}`).join(' ');
+
+/** Collapse adjacent turns, including U U -> U2 and five U turns -> U'. */
+export function compressMoves(moves: CubeMove[]): CubeMove[] {
+  const result: CubeMove[] = [];
+  for (const move of moves) {
+    const amount = (move.turns ?? 1) * (move.prime ? -1 : 1);
+    const previous = result[result.length - 1];
+    if (!previous || previous.face !== move.face) {
+      const normalized = ((amount % 4) + 4) % 4;
+      if (normalized === 0) continue;
+      result.push({ face: move.face, ...(normalized === 2 ? { turns: 2 as const } : normalized === 3 ? { prime: true } : {}) });
+      continue;
+    }
+    const previousAmount = (previous.turns ?? 1) * (previous.prime ? -1 : 1);
+    const normalized = ((previousAmount + amount) % 4 + 4) % 4;
+    result.pop();
+    if (normalized === 0) continue;
+    result.push({ face: move.face, ...(normalized === 2 ? { turns: 2 as const } : normalized === 3 ? { prime: true } : {}) });
+  }
+  return result;
+}
+
+export const formatAlg = (moves: CubeMove[]) => compressMoves(moves).map((m) => `${m.face}${m.turns === 2 ? '2' : m.prime ? "'" : ''}`).join(' ');
 
 // ── cross ───────────────────────────────────────────────────────────────
 /**
@@ -379,8 +538,9 @@ function lookup(table: Record<string, string>, key: string, stage: string): Cube
 }
 
 function runStage(state: CubeState, moves: CubeMove[], alg: CubeMove[]) {
-  moves.push(...alg);
-  return applyMoves(state, alg);
+  const normalized = compressMoves(alg);
+  moves.push(...normalized);
+  return applyMoves(state, normalized);
 }
 
 // ── the solve ───────────────────────────────────────────────────────────
