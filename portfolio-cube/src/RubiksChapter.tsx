@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import type { CubeMove, MoveFace } from './types';
 import {
@@ -63,8 +63,8 @@ interface PlannedMove {
 // paint, and the sheen/bevel comes from .xp-cube-face rather than the swatch.
 const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#e11d2c', b: '#ff7a17', r: '#08b45c', l: '#1a52dc' };
 /** Pace of the solve. The clock reports whatever the sequence actually takes. */
-// 67ms was the original cadence; 19ms makes each layer turn about 3.5x faster.
-const STEP_MS = 19;
+// 67ms was the original cadence; 13ms makes each layer turn about 5x faster.
+const STEP_MS = 13;
 const STEP_PAUSE_MS = 180;
 const STAGE_PAUSE_MS = 650;
 const ZBLS_PAUSE_MS = 650;
@@ -807,7 +807,7 @@ export function RubiksChapter() {
             </div>
             {coordinates.map(([x, y, z]) => (
               <div key={`${x}-${y}-${z}`} className="xp-cubelet" data-x={x} data-y={y} data-z={z}>
-                {FACES.map((face) => <span key={face} className={`xp-cube-face ${face}`} style={{ backgroundColor: stickerColor(face, x, y, z) }} />)}
+                {FACES.map((face) => <span key={face} className={`xp-cube-face ${face}`} style={{ ['--sticker-color' as string]: stickerColor(face, x, y, z) } as CSSProperties} />)}
               </div>
             ))}
             <div ref={pivotRef} className="xp-cube-pivot" />

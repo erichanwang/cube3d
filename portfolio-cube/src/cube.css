@@ -201,15 +201,17 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
    jumps straight over it from the project before to the one after */
 .xp-cube-chapter { position: relative; width: 100%; min-width: 0; margin: 0; border-bottom: 1px solid var(--xp-border);
   scroll-snap-align: center; scroll-snap-stop: always; }
-.xp-cube-frame { position: relative; display: grid; grid-template-rows: auto auto auto auto auto auto; align-items: center; width: 100%; min-width: 0; overflow: visible; padding: clamp(24px, 4vh, 44px) clamp(12px, 2vw, 28px) 72px; }
+.xp-cube-frame { position: relative; display: grid; grid-template-rows: auto auto auto auto auto auto; align-items: center; width: 100%; min-width: 0; overflow: visible; padding: clamp(20px, 3vh, 36px) clamp(12px, 2vw, 28px) 28px; }
 /* scramble notation above the cube */
 .xp-cube-scramble { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 3px 8px; width: min(100%, 640px); margin: 2px auto 2px; }
 .xp-cube-tape-label { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
 .xp-cube-tape { display: flex; flex-wrap: wrap; gap: 3px 7px; }
 .xp-cube-tape b { color: var(--xp-secondary); font: 400 11px 'DM Mono', monospace; font-weight: 400; }
 /* the CFOP solve, stage by stage, below the cube */
-.xp-cube-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; max-width: 720px; min-width: 0; margin: 10px auto 0; align-items: start; }
-.xp-cube-plan-row { display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: 12px; min-width: 0; align-items: baseline; opacity: 1; transition: opacity 220ms ease; }
+.xp-cube-plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px clamp(16px, 3vw, 40px); width: 100%; max-width: 720px; min-width: 0; margin: 5px auto 0; align-items: start; }
+.xp-cube-plan-row { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: 12px; min-width: 0; align-items: baseline; opacity: 1; transition: opacity 220ms ease; }
+/* the four F2L/ZBLS pairs sit two-across; stage label over its moves so each fits a half column */
+.xp-cube-plan-row--pair { grid-column: auto; grid-template-columns: 1fr; gap: 2px; }
 .xp-cube-plan-row.is-active { opacity: 1; }
 .xp-cube-plan-stage { min-width: 0; color: var(--xp-blue); font: 600 10px/1.25 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .06em; overflow-wrap: anywhere; }
 .xp-cube-plan-moves { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px 8px; }
@@ -217,6 +219,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
 .xp-cube-plan-moves button:hover { color: var(--xp-blue); }
 .xp-cube-plan-moves button.is-done { color: var(--xp-muted); opacity: .58; }
 .xp-cube-plan-moves button.is-now { color: var(--xp-text); text-shadow: 0 0 9px rgba(79,124,255,.7); }
+/* Keep the last-layer algorithm directly after ZBLS instead of leaving the
+   unused half-column visible between the ZB rows and the timer. */
+.xp-cube-plan-row--zbll { margin-top: -3px; }
 .xp-cube-playback { display: flex; align-items: center; justify-content: center; gap: 6px; width: min(100%, 680px); margin: 10px auto 0; }
 .xp-cube-playback button { min-width: 32px; min-height: 30px; padding: 0 9px; border: 1px solid var(--xp-border); background: var(--xp-surface); color: var(--xp-text); cursor: pointer; font: 500 11px 'DM Mono', monospace; transition: border-color 160ms ease, color 160ms ease, background 160ms ease; }
 .xp-cube-playback button:hover:not(:disabled) { border-color: rgba(90,134,239,.6); background: rgba(79,124,255,.1); }
@@ -234,13 +239,13 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
 .xp-cube-actions button:hover { border-color: rgba(90,134,239,.6); background: rgba(79,124,255,.1); }
 .xp-cube-actions button:disabled { opacity: .4; cursor: not-allowed; }
 .xp-cube-copy a { display: inline-flex; color: var(--xp-text); font-size: 12px; text-underline-offset: 4px; }
-.xp-cube-visual { position: relative; display: grid; width: 100%; min-width: 0; min-height: 340px; place-items: center; perspective: 1000px;
+.xp-cube-visual { position: relative; display: grid; width: 100%; min-width: 0; min-height: 280px; place-items: center; perspective: 1000px;
   cursor: grab; touch-action: none; }
 .xp-cube-visual:active { cursor: grabbing; }
 .xp-cube {
 
-  --cubelet: 66px;
-  --cube-step: 70;
+  --cubelet: 54px;
+  --cube-step: 58;
   --cube-rx: -26deg;
   --cube-ry: 36deg;
   position: relative;
@@ -270,7 +275,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
    so a corner piece reads as a third of each of its three colours. Rounded with
    only a hairline between pieces, matte (no sheen). */
 .xp-cube-face { position: absolute; inset: 0.75px; border: 0; border-radius: 8%;
-  backface-visibility: hidden; box-shadow: inset 0 0 0 1px rgba(18, 22, 25, .14); }
+  background: var(--sticker-color, #e3e8e5); backface-visibility: hidden;
+  box-shadow: inset 0 0 0 1px rgba(18, 22, 25, .14); }
 .xp-cube-face.f { transform: translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.b { transform: rotateY(180deg) translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.r { transform: rotateY(90deg) translateZ(calc(var(--cubelet) / 2)); }
@@ -283,7 +289,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
   box-shadow: inset 0 0 0 2px #ffe22e, inset 0 0 12px rgba(255, 214, 28, .35), 0 0 5px rgba(255, 214, 28, .7);
 }
 .xp-cube-readout { position: static; z-index: 2; display: grid; justify-items: center; gap: 3px;
-  width: min(100%, 42rem); max-width: 100%; min-width: 0; margin: 18px auto 0; padding: 0 8px; text-align: center; font-family: 'DM Mono', monospace; }
+  width: min(100%, 42rem); max-width: 100%; min-width: 0; margin: 10px auto 0; padding: 0 8px; text-align: center; font-family: 'DM Mono', monospace; }
 .xp-cube-verification { min-height: 1.3em; color: var(--xp-blue) !important; font-size: 10px !important; }
 .xp-cube-readout span { max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
 .xp-cube-readout b { font-size: 26px; font-weight: 500; letter-spacing: -.02em; color: var(--xp-text);
@@ -404,8 +410,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid #7d9bff; outline-offs
     transform: rotateX(var(--cube-rx)) rotateY(var(--cube-ry)) scale(.94); }
   .xp-cube-frame { padding-left: 16px; padding-right: 16px; }
   .xp-cube-plan, .xp-cube-playback { width: 100%; margin-left: 0; margin-right: 0; }
-  .xp-cube-plan { grid-template-columns: 1fr; gap: 10px; }
-  .xp-cube-plan-row--pair { grid-column: 1; padding-top: 2px; border-top: 1px solid var(--xp-border); }
+  .xp-cube-plan { grid-template-columns: 1fr; gap: 5px; }
+  .xp-cube-plan-row--pair { grid-column: 1; padding-top: 1px; border-top: 1px solid var(--xp-border); }
   .xp-cube-plan-row--zbll { grid-column: 1; }
   .xp-cube-readout { width: 100%; margin-top: 16px; }
   .xp-toolkit { width: 100%; }.xp-toolkit > .xp-section-heading, .xp-certifications { width: calc(100% - 32px); }
