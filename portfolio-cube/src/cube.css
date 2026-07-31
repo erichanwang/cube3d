@@ -28,15 +28,22 @@ a { color: inherit; }
 .xp-cube-tape { display: flex; flex-wrap: wrap; gap: 3px 7px; }
 .xp-cube-tape b { color: var(--xp-secondary); font: 400 11px 'DM Mono', monospace; font-weight: 400; }
 /* the CFOP solve, stage by stage, below the cube */
-.xp-cube-plan { display: grid; gap: 4px; width: min(100%, 680px); margin: 4px auto 0; }
+.xp-cube-plan { display: grid; gap: 4px; width: min(100%, 680px); margin: 4px auto 0 max(0px, calc((100% - 680px) / 2 - 48px)); }
 .xp-cube-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 12px; align-items: baseline;
-  opacity: .45; transition: opacity 220ms ease; }
+  opacity: 1; transition: opacity 220ms ease; }
 .xp-cube-plan-row.is-active { opacity: 1; }
 .xp-cube-plan-stage { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .09em; }
 .xp-cube-plan-moves { display: flex; flex-wrap: wrap; gap: 3px 7px; }
-.xp-cube-plan-moves b { color: var(--xp-muted); font: 400 11px 'DM Mono', monospace; transition: color 140ms ease; }
-.xp-cube-plan-moves b.is-done { color: var(--xp-secondary); }
-.xp-cube-plan-moves b.is-now { color: var(--xp-text); text-shadow: 0 0 9px rgba(79,124,255,.7); }
+.xp-cube-plan-moves button { margin: 0; padding: 0; border: 0; background: transparent; color: var(--xp-text); cursor: pointer; font: 400 11px 'DM Mono', monospace; transition: color 140ms ease, opacity 140ms ease, text-shadow 140ms ease; }
+.xp-cube-plan-moves button:hover { color: var(--xp-blue); }
+.xp-cube-plan-moves button.is-done { color: var(--xp-muted); opacity: .58; }
+.xp-cube-plan-moves button.is-now { color: var(--xp-text); text-shadow: 0 0 9px rgba(79,124,255,.7); }
+.xp-cube-playback { display: flex; align-items: center; gap: 6px; width: min(100%, 680px); margin: 10px auto 0 max(0px, calc((100% - 680px) / 2 - 48px)); }
+.xp-cube-playback button { min-width: 32px; min-height: 30px; padding: 0 9px; border: 1px solid var(--xp-border); background: var(--xp-surface); color: var(--xp-text); cursor: pointer; font: 500 11px 'DM Mono', monospace; transition: border-color 160ms ease, color 160ms ease, background 160ms ease; }
+.xp-cube-playback button:hover:not(:disabled) { border-color: rgba(90,134,239,.6); background: rgba(79,124,255,.1); }
+.xp-cube-playback button:disabled { cursor: not-allowed; opacity: .35; }
+.xp-cube-playback-main { min-width: 64px !important; }
+
 .xp-cube-copy { position: relative; z-index: 2; max-width: 420px; padding-top: 8px; }
 .xp-cube-copy > .xp-mono { margin: 0; color: var(--xp-blue); font-size: 11px; }
 .xp-cube-copy h3 { margin: 8px 0 0; font-size: clamp(26px, 2.6vw, 38px); line-height: 1; letter-spacing: -.04em; }
@@ -81,8 +88,8 @@ a { color: inherit; }
 .xp-cube-face.l { transform: rotateY(-90deg) translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.u { transform: rotateX(90deg) translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.d { transform: rotateX(-90deg) translateZ(calc(var(--cubelet) / 2)); }
-.xp-cube-readout { position: absolute; right: 0; bottom: 24px; display: grid; gap: 3px;
-  margin: 0; text-align: right; font-family: 'DM Mono', monospace; }
+.xp-cube-readout { position: absolute; left: max(0px, calc((100% - 680px) / 2 - 48px)); bottom: 24px; display: grid; gap: 3px;
+  margin: 0; text-align: left; font-family: 'DM Mono', monospace; }
 .xp-cube-readout b { font-size: 26px; font-weight: 500; letter-spacing: -.02em; color: var(--xp-text);
   font-variant-numeric: tabular-nums; }
 .xp-cube-readout span { font-size: 11px; color: var(--xp-muted); }
@@ -97,7 +104,8 @@ a { color: inherit; }
   .xp-cube-visual { min-height: 350px; }
   .xp-cube { --cubelet: 48px; --cube-step: 51; --cube-rx: -25deg; --cube-ry: 35deg;
     transform: rotateX(var(--cube-rx)) rotateY(var(--cube-ry)) scale(.94); }
-  .xp-cube-readout { right: 16px; }
+  .xp-cube-plan, .xp-cube-playback { width: 100%; margin-left: 0; margin-right: 0; }
+  .xp-cube-readout { left: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

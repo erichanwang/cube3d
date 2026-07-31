@@ -91,9 +91,13 @@ export function RubiksChapter() {
   const finishTimer = useRef(0);
   const stepTimer = useRef(0);
   const frames = useRef<number[]>([]);
+  /** Synchronously commits an in-flight turn before seek/step controls mutate it. */
+  const flushMove = useRef<(() => void) | null>(null);
   const [moveCount, setMoveCount] = useState(0);
-  // A real clock: it starts with the first quarter-turn and stops dead on the
-  // last one. The solve runs itself — scroll position has nothing to do with it.
+  const [isPlaying, setIsPlaying] = useState(false);
+  const isPlayingRef = useRef(false);
+  // A real clock: it starts when playback starts and stops when playback is
+  // paused or the final quarter-turn is complete. It is independent of scroll.
   const [clock, setClock] = useState(0);
   /** Elapsed time carried across pauses, so the clock resumes rather than restarts. */
   const clockRef = useRef(0);
@@ -115,11 +119,10 @@ export function RubiksChapter() {
    */
   const cubeState = useRef<CubeState>(solvedState());
 
-  const atStart = moveCount === 0;
   const solved = moveCount >= planLength;
 
   useEffect(() => {
-    if (atStart || solved) return;
+    if (!isPlaying || solved) return;
     const startedAt = performance.now();
     const base = clockRef.current;
     let frame = requestAnimationFrame(function tick() {
@@ -129,7 +132,7 @@ export function RubiksChapter() {
     return () => cancelAnimationFrame(frame);
     // clockRef is read once as the resume point, deliberately not a dependency
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [atStart, solved]);
+  }, [isPlaying, solved]);
 
   const bakeMove = useCallback((move: CubeMove, direction: 1 | -1, animate: boolean, done?: () => void) => {
     const cube = cubeRef.current;
@@ -141,6 +144,7 @@ export function RubiksChapter() {
     cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : { face: move.face, prime: !move.prime }]);
     const bake = () => {
       window.clearTimeout(finishTimer.current);
+      if (flushMove.current === bake) flushMove.current = null;
       for (const item of layer) {
         item.matrix = new DOMMatrix(`rotate${definition.axis}(${sign * 90}deg)`).multiply(item.matrix);
         rotateGrid(definition.axis, sign, item);
@@ -156,6 +160,7 @@ export function RubiksChapter() {
       bake();
       return;
     }
+    flushMove.current = bake;
     layer.forEach((item) => pivot.appendChild(item.el));
     pivot.classList.add('is-turning');
     // one duration for every turn, just under the step so each finishes before
@@ -171,33 +176,123 @@ export function RubiksChapter() {
     finishTimer.current = window.setTimeout(bake, STEP_MS);
   }, []);
 
-  /**
-   * The solve runs itself: one quarter-turn every STEP_MS until the cube is
-   * back to solved, started the first time the chapter comes into view. Tying
-   * turns to scroll position meant the cube could be dragged backwards and the
-   * timer never meant anything.
-   */
+  const orientToSlot = useCallback((planned: PlannedMove | undefined) => {
+    const cube = cubeRef.current;
+    if (!cube) return;
+    if (planned?.stage !== 'F2L' || planned.slot === undefined) {
+      if (visualSlot.current === null) return;
+      visualSlot.current = null;
+      cube.classList.add('is-auto-orienting');
+      cube.style.setProperty('--cube-ry', '36deg');
+      return;
+    }
+    if (planned.slot === visualSlot.current) return;
+    const yaw = [36, 126, -54, 216][planned.slot] ?? 36;
+    visualSlot.current = planned.slot;
+    cube.classList.add('is-auto-orienting');
+    cube.style.setProperty('--cube-ry', `${yaw}deg`);
+  }, []);
+
   const pump = useCallback(() => {
-    if (reduceMotion || busy.current || applied.current >= plan.current.length) return;
+    if (reduceMotion || !isPlayingRef.current || busy.current || applied.current >= plan.current.length) return;
     const planned = plan.current[applied.current];
     if (!planned) return;
     busy.current = true;
     applied.current += 1;
-    setMoveCount(applied.current);
     setStage(planned.stage);
-    if (planned.stage === 'F2L' && planned.slot !== undefined && planned.slot !== visualSlot.current && cubeRef.current) {
-      const yaw = [36, 126, -54, 216][planned.slot] ?? 36;
-      visualSlot.current = planned.slot;
-      cubeRef.current.classList.add('is-auto-orienting');
-      cubeRef.current.style.setProperty('--cube-ry', `${yaw}deg`);
-    }
+    orientToSlot(planned);
     bakeMove(planned.move, 1, !document.hidden, () => {
+      setMoveCount(applied.current);
       busy.current = false;
-      if (applied.current < plan.current.length) {
+      if (applied.current >= plan.current.length) {
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+      } else if (isPlayingRef.current) {
         stepTimer.current = window.setTimeout(pump, STEP_MS);
       }
     });
-  }, [bakeMove, reduceMotion]);
+  }, [bakeMove, orientToSlot, reduceMotion]);
+
+  /* Stop scheduled playback and finish the current visual turn synchronously. */
+  const stopAndFlush = useCallback(() => {
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    window.clearTimeout(stepTimer.current);
+    frames.current.forEach(cancelAnimationFrame);
+    frames.current = [];
+    flushMove.current?.();
+    busy.current = false;
+  }, []);
+
+  const updateReadout = useCallback((cursor: number) => {
+    const next = plan.current[cursor];
+    setMoveCount(cursor);
+    setStage(next?.stage ?? (cursor > 0 ? plan.current[cursor - 1]?.stage ?? null : null));
+    setCaseLabel(plan.current.find((planned) => planned.caseLabel)?.caseLabel ?? null);
+  }, []);
+
+  const stepForward = useCallback(() => {
+    if (reduceMotion) return;
+    stopAndFlush();
+    if (applied.current >= plan.current.length) return;
+    const planned = plan.current[applied.current];
+    if (!planned) return;
+    busy.current = true;
+    applied.current += 1;
+    orientToSlot(planned);
+    bakeMove(planned.move, 1, true, () => {
+      updateReadout(applied.current);
+      busy.current = false;
+    });
+  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+
+  const stepBackward = useCallback(() => {
+    if (reduceMotion) return;
+    stopAndFlush();
+    if (applied.current <= 0) return;
+    const planned = plan.current[applied.current - 1];
+    if (!planned) return;
+    applied.current -= 1;
+    orientToSlot(plan.current[applied.current]);
+    busy.current = true;
+    bakeMove(planned.move, -1, true, () => {
+      updateReadout(applied.current);
+      busy.current = false;
+    });
+  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+
+  const seekTo = useCallback((target: number) => {
+    if (reduceMotion) return;
+    stopAndFlush();
+    const clamped = Math.max(0, Math.min(target, plan.current.length));
+    while (applied.current < clamped) {
+      const planned = plan.current[applied.current];
+      if (!planned) break;
+      orientToSlot(planned);
+      applied.current += 1;
+      bakeMove(planned.move, 1, false);
+    }
+    while (applied.current > clamped) {
+      const planned = plan.current[applied.current - 1];
+      if (!planned) break;
+      applied.current -= 1;
+      bakeMove(planned.move, -1, false);
+    }
+    visualSlot.current = null;
+    updateReadout(applied.current);
+    orientToSlot(plan.current[applied.current]);
+  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+
+  const togglePlayback = useCallback(() => {
+    if (reduceMotion || solved) return;
+    if (isPlayingRef.current) {
+      stopAndFlush();
+      return;
+    }
+    isPlayingRef.current = true;
+    setIsPlaying(true);
+    pump();
+  }, [pump, reduceMotion, solved, stopAndFlush]);
 
   /**
    * Plan the actual CFOP solve for the current cubie state. The solver now has
@@ -220,16 +315,17 @@ export function RubiksChapter() {
   /** Scramble: drop a fresh random sequence on with no animation, then solve. */
   const scramble = useCallback(() => {
     if (reduceMotion) return;
-    window.clearTimeout(stepTimer.current);
-    busy.current = false;
+    stopAndFlush();
 
     const moves = randomScramble();
     setScrambleSeq(moves);
     for (const move of moves) bakeMove(move, 1, false);
     planSolve();
     setClock(0);
+    isPlayingRef.current = true;
+    setIsPlaying(true);
     stepTimer.current = window.setTimeout(pump, 550);
-  }, [bakeMove, planSolve, pump, reduceMotion]);
+  }, [bakeMove, planSolve, pump, reduceMotion, stopAndFlush]);
 
   useEffect(() => {
     const cube = cubeRef.current;
@@ -262,6 +358,8 @@ export function RubiksChapter() {
       observer = new IntersectionObserver(([entry]) => {
         if (!entry?.isIntersecting) return;
         observer?.disconnect();
+        isPlayingRef.current = true;
+        setIsPlaying(true);
         stepTimer.current = window.setTimeout(pump, 400);
       }, { threshold: 0.35 });
       observer.observe(section);
@@ -279,6 +377,8 @@ export function RubiksChapter() {
       runtimes.current.forEach((item) => { item.el.style.transform = ''; });
       runtimes.current = [];
       busy.current = false;
+      isPlayingRef.current = false;
+      setIsPlaying(false);
     };
   }, [bakeMove, planSolve, pump, reduceMotion]);
 
@@ -362,22 +462,36 @@ export function RubiksChapter() {
             <div ref={pivotRef} className="xp-cube-pivot" />
           </div>
         </div>
-        {/* the CFOP solve, stage by stage: each move lights up as it is played */}
-        <div className="xp-cube-plan" aria-hidden="true">
+        {/* The CFOP solve is a clickable timeline: white moves are still ahead;
+            an executed move dulls out, and clicking any move seeks to it. */}
+        <div className="xp-cube-plan">
           {stageGroups.map((group, g) => (
             <div key={g} className={`xp-cube-plan-row${stage === group.stage && !solved ? ' is-active' : ''}`}>
               <span className="xp-cube-plan-stage">{group.stage}{group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
               <span className="xp-cube-plan-moves">
                 {group.moves.map(({ move, index }) => (
-                  <b key={index} className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}>
+                  <button
+                    key={index}
+                    type="button"
+                    className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}
+                    onClick={() => seekTo(index + 1)}
+                    aria-label={`Go to move ${index + 1}: ${move.face}${move.prime ? ' prime' : ''}`}
+                  >
                     {move.face}{move.prime ? '′' : ''}
-                  </b>
+                  </button>
                 ))}
               </span>
             </div>
           ))}
         </div>
-        <p className="xp-cube-readout" aria-hidden="true">
+        <div className="xp-cube-playback" aria-label="Cube playback controls">
+          <button type="button" onClick={stepBackward} disabled={Boolean(reduceMotion) || moveCount === 0} aria-label="Previous move">←</button>
+          <button type="button" className="xp-cube-playback-main" onClick={togglePlayback} disabled={Boolean(reduceMotion) || solved} aria-label={isPlaying ? 'Pause solve' : 'Play solve'}>
+            {isPlaying ? 'Pause' : 'Play'}
+          </button>
+          <button type="button" onClick={stepForward} disabled={Boolean(reduceMotion) || solved} aria-label="Next move">→</button>
+        </div>
+        <p className="xp-cube-readout">
           {/* the clock tracks the solve rather than the scroll, so it always
               reads 0.00 unsolved and the full time on the last quarter-turn */}
           <b>{clock.toFixed(2)}s</b>
