@@ -21,7 +21,14 @@
  * Run: node scripts/verify-cube.mjs
  */
 import assert from 'node:assert/strict';
-import { solvedState, applyMoves, solveStages } from '../src/cubeSolver.ts';
+import {
+  solvedState,
+  applyMoves,
+  solveStages,
+  MOVE_TABLES,
+  CORNER_COORDS,
+  EDGE_COORDS,
+} from '../src/cubeSolver.ts';
 
 // Mirrors MOVE_DEFS in RubiksChapter.tsx.
 const MOVE_DEFS = {
@@ -223,6 +230,73 @@ const f2lPieces = (s) => s.filter((c) => kind(c) >= 2 && (home(c)[1] === 1 || (i
 const llEdges = (s) => s.filter((c) => isEdge(c) && home(c)[1] === -1);
 /** The U/D sticker of a last-layer edge still points up or down. */
 const orientedEdge = (c) => c.m[0][1] === 0 && c.m[2][1] === 0;
+const coordinateKey = (v) => v.join(',');
+const modelCoordinate = (c) => [c.x, c.y, c.z];
+const matrixKey = (m) => m.flat().join(',');
+const IDENTITY_MATRIX = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+/**
+ * Build an orientation lookup for one piece from the same outer-turn tables
+ * used by the solver and the same orientation matrices used by the DOM model.
+ * This makes the per-move parity check cover co/eo, not just positions.
+ */
+function buildOrientationMaps(coords, isCorner) {
+  return coords.map((homeCoord, piece) => {
+    const map = new Map();
+    const queue = [{
+      position: [...homeCoord],
+      matrix: IDENTITY_MATRIX,
+      orientation: 0,
+    }];
+    while (queue.length) {
+      const current = queue.shift();
+      const stateKey = `${coordinateKey(current.position)}|${matrixKey(current.matrix)}`;
+      if (map.has(stateKey)) continue;
+      map.set(stateKey, current.orientation);
+      const position = coords.findIndex((v) => coordinateKey(v) === coordinateKey(current.position));
+      for (let moveIndex = 0; moveIndex < 12; moveIndex += 1) {
+        const face = FACE_KEYS[Math.floor(moveIndex / 2)];
+        const def = MOVE_DEFS[face];
+        if (!def.pick({ x: current.position[0], y: current.position[1], z: current.position[2] })) continue;
+        const sign = def.sign * (moveIndex % 2 ? -1 : 1);
+        const nextPosition = isCorner
+          ? CORNER_COORDS[MOVE_TABLES.cornerPerm[moveIndex][position]]
+          : EDGE_COORDS[MOVE_TABLES.edgePerm[moveIndex][position]];
+        const nextMatrix = rotateOrientation(def.axis, sign, current.matrix);
+        const nextOrientation = isCorner
+          ? MOVE_TABLES.cornerTwist[moveIndex][position * 3 + current.orientation]
+          : current.orientation ^ MOVE_TABLES.edgeFlip[moveIndex][position];
+        queue.push({ position: [...nextPosition], matrix: nextMatrix, orientation: nextOrientation });
+      }
+    }
+    return map;
+  });
+}
+
+const cornerOrientationMaps = buildOrientationMaps(CORNER_COORDS, true);
+const edgeOrientationMaps = buildOrientationMaps(EDGE_COORDS, false);
+
+/** Compare the independent 27-cubelet model with the solver's complete state. */
+function assertModelMatchesState(cubes, state, when) {
+  for (const cube of cubes) {
+    const homeCoord = home(cube);
+    const currentCoord = modelCoordinate(cube);
+    const sum = Math.abs(homeCoord[0]) + Math.abs(homeCoord[1]) + Math.abs(homeCoord[2]);
+    if (sum === 3) {
+      const piece = CORNER_COORDS.findIndex((v) => coordinateKey(v) === coordinateKey(homeCoord));
+      const position = state.cp.indexOf(piece);
+      assert.equal(coordinateKey(currentCoord), coordinateKey(CORNER_COORDS[position]), `${when}: corner position diverged`);
+      const expected = cornerOrientationMaps[piece].get(`${coordinateKey(currentCoord)}|${matrixKey(cube.m)}`);
+      assert.equal(expected, state.co[position], `${when}: corner orientation diverged`);
+    } else if (sum === 2) {
+      const piece = EDGE_COORDS.findIndex((v) => coordinateKey(v) === coordinateKey(homeCoord));
+      const position = state.ep.indexOf(piece);
+      assert.equal(coordinateKey(currentCoord), coordinateKey(EDGE_COORDS[position]), `${when}: edge position diverged`);
+      const expected = edgeOrientationMaps[piece].get(`${coordinateKey(currentCoord)}|${matrixKey(cube.m)}`);
+      assert.equal(expected, state.eo[position], `${when}: edge orientation diverged`);
+    }
+  }
+}
 
 const SOLVE_TRIALS = 2000;
 const SCRAMBLE_LENGTH = 30;
@@ -233,31 +307,28 @@ let maxMoves = 0;
 let minMoves = Infinity;
 const stageTotals = new Map();
 
-let solverMissed = 0;
 for (let trial = 0; trial < SOLVE_TRIALS; trial += 1) {
   const cubes = freshCube();
   const scramble = Array.from({ length: SCRAMBLE_LENGTH }, () => ALL_MOVES[Math.floor(Math.random() * ALL_MOVES.length)]);
   for (const move of scramble) applyMove(cubes, move, 1);
 
-  // The last-layer tables are not yet complete (ZBLL one-look is empty and the
-  // three-look fallback is sampled, not enumerated — see GOALS.md Priority 3),
-  // so a case can miss. That is a known coverage gap, not a correctness bug in
-  // the moves; count it and keep going rather than aborting the whole proof.
-  let stages;
-  try {
-    stages = solveStages(applyMoves(solvedState(), scramble));
-  } catch (error) {
-    if (String(error).includes('no case for')) { solverMissed += 1; continue; }
-    throw error;
-  }
+  // A missing F2L, ZBLS, or ZBLL case is a solver failure. Do not turn it into
+  // a warning or silently substitute a rewind: the verifier must fail hard.
+  const stages = solveStages(applyMoves(solvedState(), scramble));
   assert.deepEqual(stages.map((s) => s.stage), ['Cross', 'F2L', 'F2L', 'F2L', 'ZBLS', 'ZBLL'],
     `trial ${trial}: unexpected stage list`);
 
   let moves = 0;
+  let solverCursor = applyMoves(solvedState(), scramble);
   for (const stage of stages) {
-    for (const move of stage.moves) applyMove(cubes, move, 1);
+    for (const move of stage.moves) {
+      applyMove(cubes, move, 1);
+      solverCursor = applyMoves(solverCursor, [move]);
+      assertValid(cubes, `trial ${trial} ${stage.stage} move ${moves + 1}`);
+      assertModelMatchesState(cubes, solverCursor, `trial ${trial} ${stage.stage} move ${moves + 1}`);
+      moves += 1;
+    }
     assertValid(cubes, `trial ${trial} ${stage.stage}`);
-    moves += stage.moves.length;
     stageTotals.set(stage.stage, (stageTotals.get(stage.stage) ?? 0) + stage.moves.length);
 
     assert.ok(crossPieces(cubes).every(settled), `trial ${trial}: cross broken after ${stage.stage}`);
@@ -281,7 +352,7 @@ for (let trial = 0; trial < SOLVE_TRIALS; trial += 1) {
   minMoves = Math.min(minMoves, moves);
 }
 
-const solverSolved = SOLVE_TRIALS - solverMissed;
+const solverSolved = SOLVE_TRIALS;
 
 console.log(`ok — ${Object.keys(MOVE_DEFS).length * 2} outer/slice/wide/rotation moves are type-preserving bijections`);
 console.log(`ok — every move undone by its inverse, position and orientation`);
@@ -290,7 +361,6 @@ console.log(`ok — ${TRIALS} random scrambles all legal, all solved by their in
 console.log(`     (mean ${(totalDisplaced / TRIALS).toFixed(1)}/27 cubelets displaced per scramble)`);
 const pct = ((solverSolved / SOLVE_TRIALS) * 100).toFixed(1);
 console.log(`ok — CFOP solver: ${solverSolved}/${SOLVE_TRIALS} scrambles (${pct}%) solved one-look, every stage invariant held`);
-if (solverMissed) console.log(`   WARN — ${solverMissed} scrambles hit a missing last-layer case (GOALS.md P3); runtime falls back to Rewind`);
 if (solverSolved) {
   console.log(`     ${(totalMoves / solverSolved).toFixed(1)} turns mean, ${minMoves} min, ${maxMoves} max`);
   for (const [stage, total] of stageTotals) {

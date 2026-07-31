@@ -15,8 +15,6 @@
  * per key is a proof for every state sharing that key.
  *
  * Run: node scripts/gen-cube-tables.mjs [--zbll-budget N] [--zbll-cases N]
- * This generator emits F2L/ZBLS and legacy look tables only; the canonical
- * ZBLL table and nested hashmap are maintained in zbllTable.ts/zbllHashmap.ts.
  */
 import { writeFileSync } from 'node:fs';
 import {
@@ -451,8 +449,8 @@ function permSign(order) {
 
 /**
  * Complete, sampling-free source states for the corner and edge looks. Sampling
- * the last layer through sampled F2L/ZBLS tables biased which last-layer cases
- * ever appeared, so the corner look saw 18 of 24 permutations
+ * the last layer through the (still-incomplete) F2L/ZBLS tables biased which
+ * last-layer cases ever appeared, so the corner look saw 18 of 24 permutations
  * and the edge look 8 of 12 — the runtime then threw on the rest.
  *
  * Both looks run with the corners oriented (co === 0), which is what makes a
@@ -547,4 +545,4 @@ const body = [
   '',
 ].join('\n');
 writeFileSync(new URL('../src/cubeTables.ts', import.meta.url), body);
-console.log(`wrote src/cubeTables.ts (${(body.length / 1024).toFixed(0)} kB) in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+console.log(`wrote src/experimental/cubeTables.ts (${(body.length / 1024).toFixed(0)} kB) in ${((Date.now() - t0) / 1000).toFixed(0)}s`);

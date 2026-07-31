@@ -10,6 +10,7 @@ import {
   CROSS_EDGES,
   EDGE_COORDS,
   LL_EDGES,
+  MOVE_TABLES,
   SLOTS,
   type CubeState,
   type SolveStage,
@@ -54,13 +55,13 @@ interface PlannedMove {
 
 /**
  * White on the bottom, yellow on top: CFOP builds its cross on the D face, so
- * the white cross has to be the one you watch form underneath. Green front,
- * blue back, red right, orange left as usual.
+ * the white cross has to be the one you watch form underneath. Blue left,
+ * red front, green right, orange back, with yellow above and white below.
  */
 // Vivid stickerless shades, in the spirit of a MoYu WeiLong V10 WRM: the plastic
 // itself is the colour, so these are brighter and more saturated than sticker
 // paint, and the sheen/bevel comes from .xp-cube-face rather than the swatch.
-const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#08b45c', b: '#1a52dc', r: '#e11d2c', l: '#ff7a17' };
+const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#e11d2c', b: '#ff7a17', r: '#08b45c', l: '#1a52dc' };
 /** Pace of the solve. The clock reports whatever the sequence actually takes. */
 // 67ms was the original cadence; 19ms makes each layer turn about 3.5x faster.
 const STEP_MS = 19;
@@ -68,17 +69,24 @@ const STEP_PAUSE_MS = 180;
 const STAGE_PAUSE_MS = 650;
 const ZBLS_PAUSE_MS = 650;
 const ZBLL_PAUSE_MS = 650;
-const FACES = ['u', 'd', 'f', 'b', 'r', 'l'] as const;
+// Render the side colours in the requested left-to-right order around the cube:
+// blue, red, green, orange, with yellow above and white below.
+const FACES = ['u', 'd', 'b', 'r', 'f', 'l'] as const;
+
+type CubePosition = Pick<CubeletRuntime, 'x' | 'y' | 'z'>;
 
 interface CubeletRuntime {
   el: HTMLDivElement;
   x: number;
   y: number;
   z: number;
+  homeX: number;
+  homeY: number;
+  homeZ: number;
   matrix: DOMMatrix;
 }
 
-const MOVE_DEFS: Record<MoveFace, { axis: 'X' | 'Y' | 'Z'; pick: (cube: CubeletRuntime) => boolean; sign: number }> = {
+const MOVE_DEFS: Record<MoveFace, { axis: 'X' | 'Y' | 'Z'; pick: (cube: CubePosition) => boolean; sign: number }> = {
   R: { axis: 'X', pick: (cube) => cube.x === 1, sign: -1 },
   L: { axis: 'X', pick: (cube) => cube.x === -1, sign: 1 },
   U: { axis: 'Y', pick: (cube) => cube.y === -1, sign: 1 },
@@ -118,7 +126,109 @@ function stickerColor(face: typeof FACES[number], x: number, y: number, z: numbe
   return visible ? COLORS[face] : '#e9ebe7';
 }
 
-const coordinateKey = (coordinate: readonly number[]) => coordinate.join(',');
+type Matrix3 = number[][];
+
+function identityMatrix(): Matrix3 {
+  return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+}
+
+function rotateOrientation(axis: 'X' | 'Y' | 'Z', sign: number, matrix: Matrix3): Matrix3 {
+  const rotation = axis === 'X'
+    ? [[1, 0, 0], [0, 0, -sign], [0, sign, 0]]
+    : axis === 'Y'
+      ? [[0, 0, sign], [0, 1, 0], [-sign, 0, 0]]
+      : [[0, -sign, 0], [sign, 0, 0], [0, 0, 1]];
+  return rotation.map((row) => [0, 1, 2].map((column) =>
+    row[0]! * matrix[0]![column]! + row[1]! * matrix[1]![column]! + row[2]! * matrix[2]![column]!,
+  ));
+}
+
+function matrixSignature(matrix: Matrix3): string {
+  return matrix.flat().map((value) => Math.round(value)).join(',');
+}
+
+function buildOrientationMaps(coords: readonly (readonly number[])[], isCorner: boolean) {
+  return coords.map((home) => {
+    const map = new Map<string, number>();
+    const queue: Array<{ position: number[]; matrix: Matrix3; orientation: number }> = [
+      { position: [...home], matrix: identityMatrix(), orientation: 0 },
+    ];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const stateKey = `${coordinateKey(current.position)}|${matrixSignature(current.matrix)}`;
+      if (map.has(stateKey)) continue;
+      map.set(stateKey, current.orientation);
+      const position = coords.findIndex((coordinate) => coordinateKey(coordinate) === coordinateKey(current.position));
+      for (let moveIndex = 0; moveIndex < 12; moveIndex += 1) {
+        const face = FACE_KEYS[Math.floor(moveIndex / 2)]!;
+        const definition = MOVE_DEFS[face];
+        if (!definition.pick({ x: current.position[0]!, y: current.position[1]!, z: current.position[2]! })) continue;
+        const sign = definition.sign * (moveIndex % 2 === 1 ? -1 : 1);
+        const nextPosition = isCorner
+          ? CORNER_COORDS[MOVE_TABLES.cornerPerm[moveIndex]![position]!]!
+          : EDGE_COORDS[MOVE_TABLES.edgePerm[moveIndex]![position]!]!;
+        const nextMatrix = rotateOrientation(definition.axis, sign, current.matrix);
+        const nextOrientation = isCorner
+          ? MOVE_TABLES.cornerTwist[moveIndex]![position * 3 + current.orientation]!
+          : current.orientation ^ MOVE_TABLES.edgeFlip[moveIndex]![position]!;
+        queue.push({ position: [...nextPosition], matrix: nextMatrix, orientation: nextOrientation });
+      }
+    }
+    return map;
+  });
+}
+
+let orientationMaps: { corners: Map<string, number>[]; edges: Map<string, number>[] } | null = null;
+
+function runtimeMatchesState(items: CubeletRuntime[], state: CubeState) {
+  orientationMaps ??= {
+    corners: buildOrientationMaps(CORNER_COORDS, true),
+    edges: buildOrientationMaps(EDGE_COORDS, false),
+  };
+  const occupied = new Set<string>();
+  for (const item of items) {
+    const key = coordinateKey([item.x, item.y, item.z]);
+    if (occupied.has(key)) return false;
+    occupied.add(key);
+    const m = item.matrix;
+    const values = [m.m11, m.m12, m.m13, m.m21, m.m22, m.m23, m.m31, m.m32, m.m33];
+    if (values.some((value) => !Number.isFinite(value))) return false;
+    const determinant = m.m11 * (m.m22 * m.m33 - m.m23 * m.m32)
+      - m.m21 * (m.m12 * m.m33 - m.m13 * m.m32)
+      + m.m31 * (m.m12 * m.m23 - m.m13 * m.m22);
+    if (Math.abs(Math.abs(determinant) - 1) > 1e-4) return false;
+
+    const home = [item.homeX, item.homeY, item.homeZ] as const;
+    if (Math.abs(home[0]) + Math.abs(home[1]) + Math.abs(home[2]) === 3) {
+      const piece = CORNER_COORDS.findIndex((v) => coordinateKey(v) === coordinateKey(home));
+      const position = state.cp.indexOf(piece);
+      if (position < 0 || coordinateKey(CORNER_COORDS[position]!) !== key) return false;
+      const expected = orientationMaps.corners[piece]!.get(`${key}|${matrixSignature([
+        [m.m11, m.m12, m.m13],
+        [m.m21, m.m22, m.m23],
+        [m.m31, m.m32, m.m33],
+      ])}`);
+      if (expected === undefined || expected !== state.co[position]) return false;
+
+    } else if (Math.abs(home[0]) + Math.abs(home[1]) + Math.abs(home[2]) === 2) {
+      const piece = EDGE_COORDS.findIndex((v) => coordinateKey(v) === coordinateKey(home));
+      const position = state.ep.indexOf(piece);
+      if (position < 0 || coordinateKey(EDGE_COORDS[position]!) !== key) return false;
+      const expected = orientationMaps.edges[piece]!.get(`${key}|${matrixSignature([
+        [m.m11, m.m12, m.m13],
+        [m.m21, m.m22, m.m23],
+        [m.m31, m.m32, m.m33],
+      ])}`);
+      if (expected === undefined || expected !== state.eo[position]) return false;
+
+    }
+  }
+  return occupied.size === 27;
+}
+
+function coordinateKey(coordinate: readonly number[]) {
+  return coordinate.join(',');
+}
 
 function stageKey(planned: PlannedMove | undefined) {
   if (!planned) return '';
@@ -131,7 +241,13 @@ const SLOT_YAWS = SLOTS.map(({ corner }) => {
   return 36 + (x === 1 ? (z === 1 ? 0 : 90) : (z === 1 ? -90 : 180));
 });
 
-const SIDE_COLOR_NAMES = { R: 'red', L: 'orange', F: 'green', B: 'blue' } as const;
+const SIDE_COLOR_NAMES = { R: 'green', L: 'blue', F: 'red', B: 'orange' } as const;
+/** The cube shades keyed by the colour word, so a pair label paints in its plastic. */
+const COLOR_WORD: Record<string, string> = { green: COLORS.r, blue: COLORS.l, red: COLORS.f, orange: COLORS.b };
+/** Split a "green-red pair" label so each colour word renders in that colour. */
+const colorizePair = (label: string) =>
+  label.split(/(green|blue|red|orange)/g).map((part, i) =>
+    COLOR_WORD[part] ? <span key={i} style={{ color: COLOR_WORD[part] }}>{part}</span> : part);
 const f2lPairLabel = (slot: number) => {
   const { corner } = SLOTS[slot]!;
   const [x, , z] = CORNER_COORDS[corner]!;
@@ -180,6 +296,8 @@ export function RubiksChapter() {
   const [caseLabel, setCaseLabel] = useState<string | null>(null);
   const [descriptor, setDescriptor] = useState<'Winter Variation' | 'PLL' | null>(null);
   const [solved, setSolved] = useState(false);
+  const [stepVerified, setStepVerified] = useState<boolean | null>(null);
+  const allStepsVerified = useRef(true);
   const visualSlot = useRef<number | null>(null);
   // Mirrored into state so the scramble and the tagged solve can be rendered:
   // the scramble sits above the cube, the CFOP solve moves below it.
@@ -248,7 +366,7 @@ export function RubiksChapter() {
     const definition = MOVE_DEFS[move.face];
     const sign = definition.sign * (move.prime ? -1 : 1) * direction;
     const layer = runtimes.current.filter(definition.pick);
-    cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : {
+    const nextState = applyMoves(cubeState.current, [direction === 1 ? move : {
       face: move.face,
       prime: !move.prime,
       turns: move.turns,
@@ -280,11 +398,16 @@ export function RubiksChapter() {
       }
       pivot.classList.remove('is-turning');
       pivot.style.transform = '';
+      cubeState.current = nextState;
+      const verified = runtimeMatchesState(runtimes.current, cubeState.current);
+      if (!verified) allStepsVerified.current = false;
+      setStepVerified(verified);
       done?.();
     };
 
     if (!animate) {
-      bake();
+      transformStarted = true;
+      bake(true);
       return;
     }
     flushMove.current = () => bake(true);
@@ -343,7 +466,7 @@ export function RubiksChapter() {
       setMoveCount(applied.current);
       busy.current = false;
       if (applied.current >= plan.current.length) {
-        const verified = isSolved(cubeState.current);
+        const verified = isSolved(cubeState.current) && allStepsVerified.current && runtimeMatchesState(runtimes.current, cubeState.current);
         const finalStage = stageAtCursor(applied.current, planStagesRef.current);
         setSolved(verified);
         setStage(finalStage?.stage ?? null);
@@ -390,7 +513,8 @@ export function RubiksChapter() {
     setStage(currentStage?.stage ?? target?.stage ?? null);
     setDescriptor(currentStage?.descriptor ?? target?.descriptor ?? null);
     setCaseLabel(currentStage?.caseLabel ?? target?.caseLabel ?? null);
-    setSolved(cursor >= plan.current.length && plan.current.length > 0 && isSolved(cubeState.current));
+    setSolved(cursor >= plan.current.length && plan.current.length > 0 && isSolved(cubeState.current)
+      && allStepsVerified.current && runtimeMatchesState(runtimes.current, cubeState.current));
     highlightTarget(target);
     orientToSlot(target);
   }, [highlightTarget, orientToSlot]);
@@ -487,6 +611,8 @@ export function RubiksChapter() {
     setPlanMoves(plan.current);
     setMoveCount(0);
     setSolved(false);
+    allStepsVerified.current = true;
+    setStepVerified(null);
     const firstStage = stageAtCursor(0, stages);
     setStage(firstStage?.stage ?? null);
     setDescriptor(firstStage?.descriptor ?? null);
@@ -504,6 +630,8 @@ export function RubiksChapter() {
     for (const move of moves) bakeMove(move, 1, false);
     planSolve();
     setClock(0);
+    allStepsVerified.current = true;
+    setStepVerified(null);
     isPlayingRef.current = true;
     setIsPlaying(true);
     stepTimer.current = window.setTimeout(pump, 550);
@@ -520,7 +648,7 @@ export function RubiksChapter() {
       const z = Number(el.dataset.z);
       const matrix = new DOMMatrix().translate(x * step, y * step, z * step);
       el.style.transform = matrix.toString();
-      return { el, x, y, z, matrix };
+      return { el, x, y, z, homeX: x, homeY: y, homeZ: z, matrix };
     });
     applied.current = 0;
     cubeState.current = solvedState();
@@ -618,12 +746,17 @@ export function RubiksChapter() {
   }, [planMoves, planStages]);
 
   const renderPlanGroup = (group: (typeof stageGroups)[number], key: number) => {
-    const isF2L = group.stage === 'F2L';
+    const isPair = group.stage === 'F2L' || group.stage === 'ZBLS';
     const isZBLL = group.stage === 'ZBLL';
+    const groupLabel = group.stage === 'ZBLS'
+      ? <>F2L · {colorizePair(group.pairLabel ?? 'last pair')} · ZBLS</>
+      : group.stage === 'F2L' && group.pairLabel
+        ? <>F2L · {colorizePair(group.pairLabel)}</>
+        : `${group.stage}${group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}`;
     return (
-      <div key={key} className={`xp-cube-plan-row${isF2L ? ' xp-cube-plan-row--f2l' : ''}${isZBLL ? ' xp-cube-plan-row--zbll' : ''}${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
+      <div key={key} className={`xp-cube-plan-row${isPair ? ' xp-cube-plan-row--pair' : ''}${isZBLL ? ' xp-cube-plan-row--zbll' : ''}${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
 
-        <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
+        <span className="xp-cube-plan-stage">{groupLabel}</span>
         <span className="xp-cube-plan-moves">
           {group.moves.map(({ move, index }) => (
             <button
@@ -633,7 +766,7 @@ export function RubiksChapter() {
               onClick={() => seekTo(index + 1)}
               aria-label={`Go to move ${index + 1}: ${move.face}${move.turns === 2 ? ' twice' : move.prime ? ' prime' : ''}`}
             >
-              {move.face}{move.turns === 2 ? '2' : move.prime ? '′' : ''}
+              {move.face}{move.turns === 2 ? '2' : move.prime ? "'" : ''}
             </button>
           ))}
         </span>
@@ -646,7 +779,7 @@ export function RubiksChapter() {
       <div className="xp-cube-frame">
         <div className="xp-cube-copy">
           <h3 id="cube-title">cube3D</h3>
-          <p>Starts on a random scramble and solves it by CFOP — white cross, three F2L pairs, then ZBLS and ZBLL for the last layer. One quarter-turn at a time; drag the cube to look around.</p>
+          <p>Starts on a random scramble and solves it by CFOP — white cross, three standard F2L pairs, the last pair through ZBLS, then ZBLL. One quarter-turn at a time; drag the cube to look around.</p>
           <div className="xp-cube-actions">
             <button type="button" onClick={scramble} disabled={Boolean(reduceMotion)}>Scramble</button>
             <a href="https://github.com/erichanwang/cube3d" target="_blank" rel="noreferrer">View source</a>
@@ -656,7 +789,7 @@ export function RubiksChapter() {
           <div className="xp-cube-scramble" aria-hidden="true">
             <span className="xp-cube-tape-label">Scramble</span>
             <span className="xp-cube-tape">
-              {scrambleSeq.map((move, i) => <b key={i}>{move.face}{move.turns === 2 ? '2' : move.prime ? '′' : ''}</b>)}
+              {scrambleSeq.map((move, i) => <b key={i}>{move.face}{move.turns === 2 ? '2' : move.prime ? "'" : ''}</b>)}
             </span>
           </div>
         )}
@@ -669,6 +802,9 @@ export function RubiksChapter() {
           onPointerCancel={endDrag}
         >
           <div ref={cubeRef} className="xp-cube">
+            <div className="xp-cube-body" aria-hidden="true">
+              {FACES.map((face) => <span key={face} className={`xp-cube-body-face ${face}`} />)}
+            </div>
             {coordinates.map(([x, y, z]) => (
               <div key={`${x}-${y}-${z}`} className="xp-cubelet" data-x={x} data-y={y} data-z={z}>
                 {FACES.map((face) => <span key={face} className={`xp-cube-face ${face}`} style={{ backgroundColor: stickerColor(face, x, y, z) }} />)}
@@ -694,7 +830,8 @@ export function RubiksChapter() {
               reads 0.00 unsolved and the full time on the last quarter-turn */}
           <b>{clock.toFixed(2)}s</b>
           <span>{String(moveCount).padStart(2, '0')} / {planLength} moves</span>
-          <span>{planComplete ? (solved ? 'Solved (verified)' : 'Solved check failed') : stage ? `${stage}${stage === 'F2L' && planMoves[moveCount]?.pairLabel ? ` · ${planMoves[moveCount].pairLabel}` : descriptor ? ` · ${descriptor}` : stage === 'ZBLL' && caseLabel ? ` · ${caseLabel}` : ''}` : 'Ready'}</span>
+          <span>{planComplete ? (solved && stepVerified !== false ? 'Solved (verified)' : 'Solved check failed') : stage ? `${stage}${stage === 'F2L' && planMoves[moveCount]?.pairLabel ? ` · ${planMoves[moveCount].pairLabel}` : descriptor ? ` · ${descriptor}` : stage === 'ZBLL' && caseLabel ? ` · ${caseLabel}` : ''}` : 'Ready'}</span>
+          <span className="xp-cube-verification">{stepVerified === false ? 'step check failed' : stepVerified === true ? 'step verified' : ''}</span>
         </p>
       </div>
     </section>

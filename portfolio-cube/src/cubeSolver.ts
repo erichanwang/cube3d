@@ -576,7 +576,12 @@ export function solveStages(start: CubeState): SolveStage[] {
   const zblsCase = zblsKey(s, order[3]!);
   s = runStage(s, zbls, lookup(ZBLS_TABLE, zblsCase, 'ZBLS'));
   const yellowSolvedAfterZbls = yellowSideSolved(s);
-  stages.push({ stage: 'ZBLS', moves: zbls, descriptor: yellowSolvedAfterZbls ? 'Winter Variation' : undefined });
+  stages.push({
+    stage: 'ZBLS',
+    moves: zbls,
+    slot: order[3],
+    descriptor: yellowSolvedAfterZbls ? 'Winter Variation' : undefined,
+  });
 
   const zbll: CubeMove[] = [];
   let zbllCase: ZBLLCase | undefined;
