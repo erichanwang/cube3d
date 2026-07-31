@@ -21,7 +21,7 @@ a { color: inherit; }
    jumps straight over it from the project before to the one after */
 .xp-cube-chapter { position: relative; margin: 0; border-bottom: 1px solid var(--xp-border);
   scroll-snap-align: center; scroll-snap-stop: always; }
-.xp-cube-frame { display: grid; grid-template-rows: auto auto 1fr auto; align-items: center; overflow: hidden; padding: clamp(24px, 4vh, 44px) 0; }
+.xp-cube-frame { position: relative; display: grid; grid-template-rows: auto auto auto auto auto; align-items: center; overflow: hidden; padding: clamp(24px, 4vh, 44px) 0 96px; }
 /* scramble notation above the cube */
 .xp-cube-scramble { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 3px 8px; width: min(100%, 640px); margin: 2px auto 2px; }
 .xp-cube-tape-label { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
@@ -90,11 +90,10 @@ a { color: inherit; }
 .xp-cube-face.d { transform: rotateX(-90deg) translateZ(calc(var(--cubelet) / 2)); }
 /* Yellow guide: the active physical pieces stay outlined while their stage is
    working. ZBLL deliberately clears this class, because it is a whole-LL case. */
-.xp-cubelet.is-highlighted { filter: drop-shadow(0 0 4px rgba(255, 220, 34, .95)); }
 .xp-cubelet.is-highlighted .xp-cube-face {
   box-shadow: inset 0 0 0 2px #ffe22e, inset 0 0 12px rgba(255, 214, 28, .35), 0 0 5px rgba(255, 214, 28, .7);
 }
-.xp-cube-readout { position: absolute; left: max(0px, calc((100% - 680px) / 2 - 48px)); bottom: 24px; display: grid; gap: 3px;
+.xp-cube-readout { position: absolute; left: max(0px, calc((100% - 680px) / 2 - 48px)); bottom: 24px; z-index: 2; display: grid; gap: 3px;
   margin: 0; text-align: left; font-family: 'DM Mono', monospace; }
 .xp-cube-readout b { font-size: 26px; font-weight: 500; letter-spacing: -.02em; color: var(--xp-text);
   font-variant-numeric: tabular-nums; }
@@ -105,7 +104,7 @@ a { color: inherit; }
 }
 @media (max-width: 767px) {
   .xp-cube-chapter { margin-left: -16px; margin-right: -16px; }
-  .xp-cube-frame { padding: 44px 16px; }
+  .xp-cube-frame { padding: 44px 16px 112px; }
   .xp-cube-copy { padding-top: 24px; }
   .xp-cube-visual { min-height: 350px; }
   .xp-cube { --cubelet: 48px; --cube-step: 51; --cube-rx: -25deg; --cube-ry: 35deg;

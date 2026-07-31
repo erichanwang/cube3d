@@ -62,7 +62,8 @@ interface PlannedMove {
 // paint, and the sheen/bevel comes from .xp-cube-face rather than the swatch.
 const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#08b45c', b: '#1a52dc', r: '#e11d2c', l: '#ff7a17' };
 /** Pace of the solve. The clock reports whatever the sequence actually takes. */
-const STEP_MS = 67;
+// 67ms was the original cadence; 19ms makes each layer turn about 3.5x faster.
+const STEP_MS = 19;
 const STEP_PAUSE_MS = 180;
 const STAGE_PAUSE_MS = 650;
 const ZBLS_PAUSE_MS = 650;
@@ -226,12 +227,27 @@ export function RubiksChapter() {
     const sign = definition.sign * (move.prime ? -1 : 1) * direction;
     const layer = runtimes.current.filter(definition.pick);
     cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : { face: move.face, prime: !move.prime }]);
-    const bake = () => {
+    let transitionEnd: ((event: TransitionEvent) => void) | null = null;
+    let transformStarted = false;
+    const bake = (force = false) => {
+      // A delayed RAF must never commit a turn before its visual transform has
+      // started. Manual seek/pause passes force=true so controls remain instant.
+      if (!transformStarted && !force) {
+        finishTimer.current = window.setTimeout(() => bake(), 16);
+        return;
+      }
       window.clearTimeout(finishTimer.current);
-      if (flushMove.current === bake) flushMove.current = null;
+      if (transitionEnd) {
+        pivot.removeEventListener('transitionend', transitionEnd);
+        transitionEnd = null;
+      }
+      flushMove.current = null;
       for (const item of layer) {
         item.matrix = new DOMMatrix(`rotate${definition.axis}(${sign * 90}deg)`).multiply(item.matrix);
         rotateGrid(definition.axis, sign, item);
+        item.el.dataset.x = String(item.x);
+        item.el.dataset.y = String(item.y);
+        item.el.dataset.z = String(item.z);
         item.el.style.transform = item.matrix.toString();
         cube.insertBefore(item.el, pivot);
       }
@@ -244,20 +260,27 @@ export function RubiksChapter() {
       bake();
       return;
     }
-    flushMove.current = bake;
+    flushMove.current = () => bake(true);
     layer.forEach((item) => pivot.appendChild(item.el));
     pivot.classList.add('is-turning');
     // one duration for every turn, just under the step so each finishes before
     // the next begins
-    pivot.style.setProperty('--turn-duration', `${Math.round(STEP_MS * 0.86)}ms`);
-    const first = requestAnimationFrame(() => {
-      const second = requestAnimationFrame(() => {
-        pivot.style.transform = `rotate${definition.axis}(${sign * 90}deg)`;
-      });
-      frames.current.push(second);
+    pivot.style.setProperty('--turn-duration', `${STEP_MS}ms`);
+    // Start on the next paint, then bake just after the fast visual turn. A
+    // nested RAF used to defer the transform by another frame, which overtook
+    // this 19ms cadence and could make turns disappear.
+    transitionEnd = (event) => {
+      if (event.target === pivot && event.propertyName === 'transform') bake();
+    };
+    pivot.addEventListener('transitionend', transitionEnd);
+    const frame = requestAnimationFrame(() => {
+      transformStarted = true;
+      pivot.style.transform = `rotate${definition.axis}(${sign * 90}deg)`;
+      // The transition is the source of truth; this timeout only recovers if a
+      // browser drops transitionend while the tab is backgrounded/throttled.
+      finishTimer.current = window.setTimeout(() => bake(), STEP_MS + 16);
     });
-    frames.current.push(first);
-    finishTimer.current = window.setTimeout(bake, STEP_MS);
+    frames.current.push(frame);
   }, []);
 
   const orientToSlot = useCallback((planned: PlannedMove | undefined) => {
