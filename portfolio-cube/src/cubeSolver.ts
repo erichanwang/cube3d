@@ -193,6 +193,9 @@ export const slotSolved = (s: CubeState, slot: number) => {
 };
 export const f2lSolved = (s: CubeState) => crossSolved(s) && SLOTS.every((_, i) => slotSolved(s, i));
 export const edgesOriented = (s: CubeState) => s.eo.every((o) => o === 0);
+/** The entire U face is yellow when every last-layer corner and edge is oriented. */
+export const yellowSideSolved = (s: CubeState) =>
+  LL_CORNERS.every((p) => s.co[p] === 0) && LL_EDGES.every((p) => s.eo[p] === 0);
 
 // ── case keys ───────────────────────────────────────────────────────────
 /**
@@ -388,6 +391,8 @@ export interface SolveStage {
   /** The F2L slot this stage is inserting, used only by the visualizer. */
   slot?: number;
   caseLabel?: ZBLLCase['label'];
+  /** Friendly method name when ZBLS already orients the complete yellow face. */
+  descriptor?: 'Winter Variation' | 'PLL';
 }
 
 export function solveStages(start: CubeState): SolveStage[] {
@@ -410,7 +415,8 @@ export function solveStages(start: CubeState): SolveStage[] {
   const zbls: CubeMove[] = [];
   const zblsCase = zblsKey(s, order[3]!);
   s = runStage(s, zbls, lookup(ZBLS_TABLE, zblsCase, 'ZBLS'));
-  stages.push({ stage: 'ZBLS', moves: zbls });
+  const yellowSolvedAfterZbls = yellowSideSolved(s);
+  stages.push({ stage: 'ZBLS', moves: zbls, descriptor: yellowSolvedAfterZbls ? 'Winter Variation' : undefined });
 
   const zbll: CubeMove[] = [];
   let zbllCase: ZBLLCase | undefined;
@@ -427,7 +433,7 @@ export function solveStages(start: CubeState): SolveStage[] {
     break;
   }
   if (!zbllCase) throw new Error(`ZBLL: no canonical case for ${zbllKey(s)}`);
-  stages.push({ stage: 'ZBLL', moves: zbll, caseLabel: zbllCase.label });
+  stages.push({ stage: 'ZBLL', moves: zbll, caseLabel: zbllCase.label, descriptor: yellowSolvedAfterZbls ? 'PLL' : undefined });
 
   if (!isSolved(s)) throw new Error('solver finished on an unsolved cube');
   return stages;

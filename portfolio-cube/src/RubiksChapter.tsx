@@ -3,6 +3,7 @@ import { useReducedMotion } from 'framer-motion';
 import type { CubeMove } from './types';
 import {
   applyMoves,
+  isSolved,
   solveStages,
   solvedState,
   CORNER_COORDS,
@@ -11,6 +12,7 @@ import {
   LL_EDGES,
   SLOTS,
   type CubeState,
+  type SolveStage,
   type StageName,
 } from './cubeSolver';
 
@@ -41,7 +43,14 @@ function randomScramble(length = 22): CubeMove[] {
 }
 
 /** One planned quarter-turn, tagged with the CFOP stage that asked for it. */
-interface PlannedMove { move: CubeMove; stage: StageName; slot?: number; caseLabel?: string; pairLabel?: string }
+interface PlannedMove {
+  move: CubeMove;
+  stage: StageName;
+  slot?: number;
+  caseLabel?: string;
+  pairLabel?: string;
+  descriptor?: 'Winter Variation' | 'PLL';
+}
 
 /**
  * White on the bottom, yellow on top: CFOP builds its cross on the D face, so
@@ -117,6 +126,16 @@ const f2lPairLabel = (slot: number) => {
   return `${first}-${second} pair`;
 };
 
+/** Resolve stage metadata at a flattened move cursor, including empty stages. */
+function stageAtCursor(cursor: number, stages: SolveStage[]) {
+  let offset = 0;
+  for (const entry of stages) {
+    if (cursor < offset + entry.moves.length) return entry;
+    offset += entry.moves.length;
+  }
+  return stages[stages.length - 1];
+}
+
 export function RubiksChapter() {
   const sectionRef = useRef<HTMLElement>(null);
   const cubeRef = useRef<HTMLDivElement>(null);
@@ -141,14 +160,18 @@ export function RubiksChapter() {
   clockRef.current = clock;
   /** The turns still to play, each tagged with the stage that planned it. */
   const plan = useRef<PlannedMove[]>([]);
+  const planStagesRef = useRef<SolveStage[]>([]);
   const [planLength, setPlanLength] = useState(0);
   const [stage, setStage] = useState<StageName | null>(null);
   const [caseLabel, setCaseLabel] = useState<string | null>(null);
+  const [descriptor, setDescriptor] = useState<'Winter Variation' | 'PLL' | null>(null);
+  const [solved, setSolved] = useState(false);
   const visualSlot = useRef<number | null>(null);
   // Mirrored into state so the scramble and the tagged solve can be rendered:
   // the scramble sits above the cube, the CFOP solve moves below it.
   const [scrambleSeq, setScrambleSeq] = useState<CubeMove[]>([]);
   const [planMoves, setPlanMoves] = useState<PlannedMove[]>([]);
+  const [planStages, setPlanStages] = useState<SolveStage[]>([]);
 
   /** Highlight the physical pieces for the stage currently being executed. */
   const highlightTarget = useCallback((planned: PlannedMove | undefined) => {
@@ -180,7 +203,7 @@ export function RubiksChapter() {
    */
   const cubeState = useRef<CubeState>(solvedState());
 
-  const solved = moveCount >= planLength;
+  const planComplete = moveCount >= planLength && planLength > 0;
 
   useEffect(() => {
     if (!isPlaying || solved) return;
@@ -261,23 +284,36 @@ export function RubiksChapter() {
     busy.current = true;
     applied.current += 1;
     setStage(planned.stage);
+    setDescriptor(planned.descriptor ?? null);
+    setCaseLabel(planned.caseLabel ?? null);
+    setSolved(false);
     highlightTarget(planned);
     orientToSlot(planned);
     bakeMove(planned.move, 1, !document.hidden, () => {
       setMoveCount(applied.current);
       busy.current = false;
       if (applied.current >= plan.current.length) {
+        const verified = isSolved(cubeState.current);
+        const finalStage = stageAtCursor(applied.current, planStagesRef.current);
+        setSolved(verified);
+        setStage(finalStage?.stage ?? null);
+        setDescriptor(finalStage?.descriptor ?? null);
+        setCaseLabel(finalStage?.caseLabel ?? null);
         isPlayingRef.current = false;
         setIsPlaying(false);
       } else if (isPlayingRef.current) {
+        setSolved(false);
         const next = plan.current[applied.current];
+        const nextStage = stageAtCursor(applied.current, planStagesRef.current);
         const stageChanged = stageKey(next) !== stageKey(planned);
         const pause = stageChanged && next?.stage === 'ZBLL'
           ? ZBLL_PAUSE_MS
           : stageChanged && next?.stage === 'ZBLS'
             ? ZBLS_PAUSE_MS
             : stageChanged ? STAGE_PAUSE_MS : STEP_PAUSE_MS;
-        setStage(next?.stage ?? null);
+        setStage(nextStage?.stage ?? next?.stage ?? null);
+        setDescriptor(nextStage?.descriptor ?? next?.descriptor ?? null);
+        setCaseLabel(nextStage?.caseLabel ?? next?.caseLabel ?? null);
         highlightTarget(next);
         orientToSlot(next);
         stepTimer.current = window.setTimeout(pump, STEP_MS + pause);
@@ -300,8 +336,11 @@ export function RubiksChapter() {
     const next = plan.current[cursor];
     setMoveCount(cursor);
     const target = next ?? (cursor > 0 ? plan.current[cursor - 1] : undefined);
-    setStage(target?.stage ?? null);
-    setCaseLabel(target?.caseLabel ?? null);
+    const currentStage = stageAtCursor(cursor, planStagesRef.current);
+    setStage(currentStage?.stage ?? target?.stage ?? null);
+    setDescriptor(currentStage?.descriptor ?? target?.descriptor ?? null);
+    setCaseLabel(currentStage?.caseLabel ?? target?.caseLabel ?? null);
+    setSolved(cursor >= plan.current.length && plan.current.length > 0 && isSolved(cubeState.current));
     highlightTarget(target);
     orientToSlot(target);
   }, [highlightTarget, orientToSlot]);
@@ -315,6 +354,9 @@ export function RubiksChapter() {
     busy.current = true;
     applied.current += 1;
     setStage(planned.stage);
+    setDescriptor(planned.descriptor ?? null);
+    setCaseLabel(planned.caseLabel ?? null);
+    setSolved(false);
     highlightTarget(planned);
     orientToSlot(planned);
     bakeMove(planned.move, 1, true, () => {
@@ -361,7 +403,7 @@ export function RubiksChapter() {
   }, [bakeMove, highlightTarget, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
 
   const togglePlayback = useCallback(() => {
-    if (reduceMotion || solved) return;
+    if (reduceMotion || planComplete) return;
     if (isPlayingRef.current) {
       stopAndFlush();
       return;
@@ -369,7 +411,7 @@ export function RubiksChapter() {
     isPlayingRef.current = true;
     setIsPlaying(true);
     pump();
-  }, [pump, reduceMotion, solved, stopAndFlush]);
+  }, [planComplete, pump, reduceMotion, stopAndFlush]);
 
   /**
    * Plan the actual CFOP solve for the current cubie state. The solver now has
@@ -378,6 +420,8 @@ export function RubiksChapter() {
    */
   const planSolve = useCallback(() => {
     const stages = solveStages(cubeState.current);
+    planStagesRef.current = stages;
+    setPlanStages(stages);
     plan.current = stages
       .flatMap((entry) => entry.moves.map((move) => ({
         move,
@@ -385,14 +429,18 @@ export function RubiksChapter() {
         slot: entry.slot,
         caseLabel: entry.caseLabel,
         pairLabel: entry.slot === undefined ? undefined : f2lPairLabel(entry.slot),
+        descriptor: entry.descriptor,
       })));
     visualSlot.current = null;
     applied.current = 0;
     setPlanLength(plan.current.length);
     setPlanMoves(plan.current);
     setMoveCount(0);
-    setStage(plan.current[0]?.stage ?? null);
-    setCaseLabel(plan.current[0]?.caseLabel ?? null);
+    setSolved(false);
+    const firstStage = stageAtCursor(0, stages);
+    setStage(firstStage?.stage ?? null);
+    setDescriptor(firstStage?.descriptor ?? null);
+    setCaseLabel(firstStage?.caseLabel ?? null);
   }, []);
 
   /** Scramble: drop a fresh random sequence on with no animation, then solve. */
@@ -499,17 +547,25 @@ export function RubiksChapter() {
   // one run), each move tagged with its position so the render can light up
   // whatever has already been played.
   const stageGroups = useMemo(() => {
-    const groups: Array<{ stage: StageName; slot?: number; caseLabel?: string; pairLabel?: string; moves: Array<{ move: CubeMove; index: number }> }> = [];
-    planMoves.forEach((planned, index) => {
-      const last = groups[groups.length - 1];
-      if (last && last.stage === planned.stage && last.slot === planned.slot) {
-        last.moves.push({ move: planned.move, index });
-        last.caseLabel ??= planned.caseLabel;
-        last.pairLabel ??= planned.pairLabel;
-      } else groups.push({ stage: planned.stage, slot: planned.slot, caseLabel: planned.caseLabel, pairLabel: planned.pairLabel, moves: [{ move: planned.move, index }] });
+    const groups: Array<{ stage: StageName; slot?: number; caseLabel?: string; pairLabel?: string; descriptor?: 'Winter Variation' | 'PLL'; moves: Array<{ move: CubeMove; index: number }> }> = [];
+    let cursor = 0;
+    planStages.forEach((entry) => {
+      const moves = planMoves.slice(cursor, cursor + entry.moves.length).map((planned, offset) => ({
+        move: planned.move,
+        index: cursor + offset,
+      }));
+      groups.push({
+        stage: entry.stage,
+        slot: entry.slot,
+        caseLabel: entry.caseLabel,
+        pairLabel: entry.slot === undefined ? undefined : f2lPairLabel(entry.slot),
+        descriptor: entry.descriptor,
+        moves,
+      });
+      cursor += entry.moves.length;
     });
     return groups;
-  }, [planMoves]);
+  }, [planMoves, planStages]);
 
   return (
     <section ref={sectionRef} className="xp-cube-chapter" aria-labelledby="cube-title">
@@ -552,10 +608,10 @@ export function RubiksChapter() {
             an executed move dulls out, and clicking any move seeks to it. */}
         <div className="xp-cube-plan">
           {stageGroups.map((group, g) => (
-            <div key={g} className={`xp-cube-plan-row${stage === group.stage && (group.slot === undefined || group.slot === planMoves[moveCount]?.slot) && !solved ? ' is-active' : ''}`}>
-              <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
+            <div key={g} className={`xp-cube-plan-row${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
+              <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
               <span className="xp-cube-plan-moves">
-                {group.moves.map(({ move, index }) => (
+                {group.moves.map(({ move, index }) => (solved || index < moveCount) && (
                   <button
                     key={index}
                     type="button"
@@ -572,17 +628,17 @@ export function RubiksChapter() {
         </div>
         <div className="xp-cube-playback" aria-label="Cube playback controls">
           <button type="button" onClick={stepBackward} disabled={Boolean(reduceMotion) || moveCount === 0} aria-label="Previous move">←</button>
-          <button type="button" className="xp-cube-playback-main" onClick={togglePlayback} disabled={Boolean(reduceMotion) || solved} aria-label={isPlaying ? 'Pause solve' : 'Play solve'}>
+          <button type="button" className="xp-cube-playback-main" onClick={togglePlayback} disabled={Boolean(reduceMotion) || planComplete} aria-label={isPlaying ? 'Pause solve' : 'Play solve'}>
             {isPlaying ? 'Pause' : 'Play'}
           </button>
-          <button type="button" onClick={stepForward} disabled={Boolean(reduceMotion) || solved} aria-label="Next move">→</button>
+          <button type="button" onClick={stepForward} disabled={Boolean(reduceMotion) || planComplete} aria-label="Next move">→</button>
         </div>
         <p className="xp-cube-readout">
           {/* the clock tracks the solve rather than the scroll, so it always
               reads 0.00 unsolved and the full time on the last quarter-turn */}
           <b>{clock.toFixed(2)}s</b>
           <span>{String(moveCount).padStart(2, '0')} / {planLength} moves</span>
-          <span>{solved ? 'Solved' : stage ? `${stage}${stage === 'F2L' && planMoves[moveCount]?.pairLabel ? ` · ${planMoves[moveCount].pairLabel}` : stage === 'ZBLL' && caseLabel ? ` · ${caseLabel}` : ''}` : 'Ready'}</span>
+          <span>{planComplete ? (solved ? 'Solved (verified)' : 'Solved check failed') : stage ? `${stage}${stage === 'F2L' && planMoves[moveCount]?.pairLabel ? ` · ${planMoves[moveCount].pairLabel}` : descriptor ? ` · ${descriptor}` : stage === 'ZBLL' && caseLabel ? ` · ${caseLabel}` : ''}` : 'Ready'}</span>
         </p>
       </div>
     </section>
