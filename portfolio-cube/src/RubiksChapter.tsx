@@ -590,6 +590,28 @@ export function RubiksChapter() {
     return groups;
   }, [planMoves, planStages]);
 
+  const renderPlanGroup = (group: (typeof stageGroups)[number], key: number) => {
+    const isF2L = group.stage === 'F2L';
+    return (
+      <div key={key} className={`xp-cube-plan-row${isF2L ? ' xp-cube-plan-row--f2l' : ''}${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
+        <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
+        <span className="xp-cube-plan-moves">
+          {group.moves.map(({ move, index }) => (solved || index < moveCount) && (
+            <button
+              key={index}
+              type="button"
+              className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}
+              onClick={() => seekTo(index + 1)}
+              aria-label={`Go to move ${index + 1}: ${move.face}${move.prime ? ' prime' : ''}`}
+            >
+              {move.face}{move.prime ? '′' : ''}
+            </button>
+          ))}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <section ref={sectionRef} className="xp-cube-chapter" aria-labelledby="cube-title">
       <div className="xp-cube-frame">
@@ -630,24 +652,7 @@ export function RubiksChapter() {
         {/* The CFOP solve is a clickable timeline: white moves are still ahead;
             an executed move dulls out, and clicking any move seeks to it. */}
         <div className="xp-cube-plan">
-          {stageGroups.map((group, g) => (
-            <div key={g} className={`xp-cube-plan-row${stage === group.stage && (group.slot === undefined || group.slot === stageAtCursor(moveCount, planStages)?.slot) && !solved ? ' is-active' : ''}`}>
-              <span className="xp-cube-plan-stage">{group.stage}{group.pairLabel ? ` · ${group.pairLabel}` : group.descriptor ? ` · ${group.descriptor}` : group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
-              <span className="xp-cube-plan-moves">
-                {group.moves.map(({ move, index }) => (solved || index < moveCount) && (
-                  <button
-                    key={index}
-                    type="button"
-                    className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}
-                    onClick={() => seekTo(index + 1)}
-                    aria-label={`Go to move ${index + 1}: ${move.face}${move.prime ? ' prime' : ''}`}
-                  >
-                    {move.face}{move.prime ? '′' : ''}
-                  </button>
-                ))}
-              </span>
-            </div>
-          ))}
+          {stageGroups.map(renderPlanGroup)}
         </div>
         <div className="xp-cube-playback" aria-label="Cube playback controls">
           <button type="button" onClick={stepBackward} disabled={Boolean(reduceMotion) || moveCount === 0} aria-label="Previous move">←</button>
