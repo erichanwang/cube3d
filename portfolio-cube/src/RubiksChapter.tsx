@@ -56,6 +56,7 @@ const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#08b45c', b: '#1a52dc', r: '#e1
 const STEP_MS = 67;
 const STEP_PAUSE_MS = 180;
 const STAGE_PAUSE_MS = 650;
+const ZBLL_PAUSE_MS = 650;
 const FACES = ['u', 'd', 'f', 'b', 'r', 'l'] as const;
 
 interface CubeletRuntime {
@@ -261,7 +262,9 @@ export function RubiksChapter() {
       } else if (isPlayingRef.current) {
         const next = plan.current[applied.current];
         const stageChanged = stageKey(next) !== stageKey(planned);
-        const pause = stageChanged ? STAGE_PAUSE_MS : STEP_PAUSE_MS;
+        const pause = stageChanged && next?.stage === 'ZBLL'
+          ? ZBLL_PAUSE_MS
+          : stageChanged ? STAGE_PAUSE_MS : STEP_PAUSE_MS;
         setStage(next?.stage ?? null);
         highlightTarget(next);
         orientToSlot(next);
