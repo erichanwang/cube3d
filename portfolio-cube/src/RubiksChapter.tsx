@@ -1,0 +1,390 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useReducedMotion } from 'framer-motion';
+import type { CubeMove } from './types';
+import { applyMoves, solveStages, solvedState, type CubeState, type StageName } from './cubeSolver';
+
+const FACE_KEYS = ['R', 'L', 'U', 'D', 'F', 'B'] as const;
+/** Faces that cancel or commute with each other, used to reject dud scrambles. */
+const OPPOSITE: Record<string, string> = { R: 'L', L: 'R', U: 'D', D: 'U', F: 'B', B: 'F' };
+
+/**
+ * A competition-style random scramble: no move on the face just turned (it
+ * would merge into one turn) and no three-in-a-row on an opposing pair (F B F
+ * is the same as B F F). Every state it reaches is legal by construction — it
+ * is a sequence of legal quarter-turns applied to a solved cube — and
+ * scripts/verify-cube.mjs checks that over many random scrambles.
+ */
+function randomScramble(length = 22): CubeMove[] {
+  const moves: CubeMove[] = [];
+  let last = '';
+  let beforeLast = '';
+  while (moves.length < length) {
+    const face = FACE_KEYS[Math.floor(Math.random() * FACE_KEYS.length)]!;
+    if (face === last) continue;
+    if (face === beforeLast && OPPOSITE[last] === face) continue;
+    moves.push({ face, prime: Math.random() < 0.5 });
+    beforeLast = last;
+    last = face;
+  }
+  return moves;
+}
+
+/** One planned quarter-turn, tagged with the CFOP stage that asked for it. */
+interface PlannedMove { move: CubeMove; stage: StageName; slot?: number; caseLabel?: string }
+
+/**
+ * White on the bottom, yellow on top: CFOP builds its cross on the D face, so
+ * the white cross has to be the one you watch form underneath. Green front,
+ * blue back, red right, orange left as usual.
+ */
+// Vivid stickerless shades, in the spirit of a MoYu WeiLong V10 WRM: the plastic
+// itself is the colour, so these are brighter and more saturated than sticker
+// paint, and the sheen/bevel comes from .xp-cube-face rather than the swatch.
+const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#08b45c', b: '#1a52dc', r: '#e11d2c', l: '#ff7a17' };
+/** Pace of the solve. The clock reports whatever the sequence actually takes. */
+const STEP_MS = 67;
+const FACES = ['u', 'd', 'f', 'b', 'r', 'l'] as const;
+
+interface CubeletRuntime {
+  el: HTMLDivElement;
+  x: number;
+  y: number;
+  z: number;
+  matrix: DOMMatrix;
+}
+
+const MOVE_DEFS = {
+  R: { axis: 'X', pick: (cube: CubeletRuntime) => cube.x === 1, sign: -1 },
+  L: { axis: 'X', pick: (cube: CubeletRuntime) => cube.x === -1, sign: 1 },
+  U: { axis: 'Y', pick: (cube: CubeletRuntime) => cube.y === -1, sign: 1 },
+  D: { axis: 'Y', pick: (cube: CubeletRuntime) => cube.y === 1, sign: -1 },
+  F: { axis: 'Z', pick: (cube: CubeletRuntime) => cube.z === 1, sign: 1 },
+  B: { axis: 'Z', pick: (cube: CubeletRuntime) => cube.z === -1, sign: -1 },
+} as const;
+
+function rotateGrid(axis: string, sign: number, cube: CubeletRuntime) {
+  const { x, y, z } = cube;
+  if (axis === 'X') { cube.y = -sign * z; cube.z = sign * y; }
+  if (axis === 'Y') { cube.x = sign * z; cube.z = -sign * x; }
+  if (axis === 'Z') { cube.x = -sign * y; cube.y = sign * x; }
+}
+
+function stickerColor(face: typeof FACES[number], x: number, y: number, z: number) {
+  const visible = face === 'u' ? y === -1
+    : face === 'd' ? y === 1
+      : face === 'f' ? z === 1
+        : face === 'b' ? z === -1
+          : face === 'r' ? x === 1
+            : x === -1;
+  // inner faces are the dark cube core, kept thin by the tight gaps
+  return visible ? COLORS[face] : '#141519';
+}
+
+export function RubiksChapter() {
+  const sectionRef = useRef<HTMLElement>(null);
+  const cubeRef = useRef<HTMLDivElement>(null);
+  const pivotRef = useRef<HTMLDivElement>(null);
+  const reduceMotion = useReducedMotion();
+  const runtimes = useRef<CubeletRuntime[]>([]);
+  const applied = useRef(0);
+  const busy = useRef(false);
+  const finishTimer = useRef(0);
+  const stepTimer = useRef(0);
+  const frames = useRef<number[]>([]);
+  const [moveCount, setMoveCount] = useState(0);
+  // A real clock: it starts with the first quarter-turn and stops dead on the
+  // last one. The solve runs itself — scroll position has nothing to do with it.
+  const [clock, setClock] = useState(0);
+  /** Elapsed time carried across pauses, so the clock resumes rather than restarts. */
+  const clockRef = useRef(0);
+  clockRef.current = clock;
+  /** The turns still to play, each tagged with the stage that planned it. */
+  const plan = useRef<PlannedMove[]>([]);
+  const [planLength, setPlanLength] = useState(0);
+  const [stage, setStage] = useState<StageName | null>(null);
+  const [caseLabel, setCaseLabel] = useState<string | null>(null);
+  const visualSlot = useRef<number | null>(null);
+  // Mirrored into state so the scramble and the tagged solve can be rendered:
+  // the scramble sits above the cube, the CFOP solve moves below it.
+  const [scrambleSeq, setScrambleSeq] = useState<CubeMove[]>([]);
+  const [planMoves, setPlanMoves] = useState<PlannedMove[]>([]);
+  /**
+   * The cube the solver reasons about, kept in step with the DOM one turn for
+   * turn. Solving from this rather than from "solved plus the scramble I just
+   * made up" is what lets Scramble interrupt a solve half way through.
+   */
+  const cubeState = useRef<CubeState>(solvedState());
+
+  const atStart = moveCount === 0;
+  const solved = moveCount >= planLength;
+
+  useEffect(() => {
+    if (atStart || solved) return;
+    const startedAt = performance.now();
+    const base = clockRef.current;
+    let frame = requestAnimationFrame(function tick() {
+      setClock(base + (performance.now() - startedAt) / 1000);
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+    // clockRef is read once as the resume point, deliberately not a dependency
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atStart, solved]);
+
+  const bakeMove = useCallback((move: CubeMove, direction: 1 | -1, animate: boolean, done?: () => void) => {
+    const cube = cubeRef.current;
+    const pivot = pivotRef.current;
+    if (!cube || !pivot) return;
+    const definition = MOVE_DEFS[move.face];
+    const sign = definition.sign * (move.prime ? -1 : 1) * direction;
+    const layer = runtimes.current.filter(definition.pick);
+    cubeState.current = applyMoves(cubeState.current, [direction === 1 ? move : { face: move.face, prime: !move.prime }]);
+    const bake = () => {
+      window.clearTimeout(finishTimer.current);
+      for (const item of layer) {
+        item.matrix = new DOMMatrix(`rotate${definition.axis}(${sign * 90}deg)`).multiply(item.matrix);
+        rotateGrid(definition.axis, sign, item);
+        item.el.style.transform = item.matrix.toString();
+        cube.insertBefore(item.el, pivot);
+      }
+      pivot.classList.remove('is-turning');
+      pivot.style.transform = '';
+      done?.();
+    };
+
+    if (!animate) {
+      bake();
+      return;
+    }
+    layer.forEach((item) => pivot.appendChild(item.el));
+    pivot.classList.add('is-turning');
+    // one duration for every turn, just under the step so each finishes before
+    // the next begins
+    pivot.style.setProperty('--turn-duration', `${Math.round(STEP_MS * 0.86)}ms`);
+    const first = requestAnimationFrame(() => {
+      const second = requestAnimationFrame(() => {
+        pivot.style.transform = `rotate${definition.axis}(${sign * 90}deg)`;
+      });
+      frames.current.push(second);
+    });
+    frames.current.push(first);
+    finishTimer.current = window.setTimeout(bake, STEP_MS);
+  }, []);
+
+  /**
+   * The solve runs itself: one quarter-turn every STEP_MS until the cube is
+   * back to solved, started the first time the chapter comes into view. Tying
+   * turns to scroll position meant the cube could be dragged backwards and the
+   * timer never meant anything.
+   */
+  const pump = useCallback(() => {
+    if (reduceMotion || busy.current || applied.current >= plan.current.length) return;
+    const planned = plan.current[applied.current];
+    if (!planned) return;
+    busy.current = true;
+    applied.current += 1;
+    setMoveCount(applied.current);
+    setStage(planned.stage);
+    if (planned.stage === 'F2L' && planned.slot !== undefined && planned.slot !== visualSlot.current && cubeRef.current) {
+      const yaw = [36, 126, -54, 216][planned.slot] ?? 36;
+      visualSlot.current = planned.slot;
+      cubeRef.current.classList.add('is-auto-orienting');
+      cubeRef.current.style.setProperty('--cube-ry', `${yaw}deg`);
+    }
+    bakeMove(planned.move, 1, !document.hidden, () => {
+      busy.current = false;
+      if (applied.current < plan.current.length) {
+        stepTimer.current = window.setTimeout(pump, STEP_MS);
+      }
+    });
+  }, [bakeMove, reduceMotion]);
+
+  /**
+   * Plan the actual CFOP solve for the current cubie state. The solver now has
+   * complete F2L, ZBLS, and canonical one-look ZBLL coverage, so a missing case
+   * is an implementation error rather than a reason to silently rewind.
+   */
+  const planSolve = useCallback(() => {
+    const stages = solveStages(cubeState.current);
+    plan.current = stages
+      .flatMap((entry) => entry.moves.map((move) => ({ move, stage: entry.stage, slot: entry.slot, caseLabel: entry.caseLabel })));
+    visualSlot.current = null;
+    applied.current = 0;
+    setPlanLength(plan.current.length);
+    setPlanMoves(plan.current);
+    setMoveCount(0);
+    setStage(plan.current[0]?.stage ?? null);
+    setCaseLabel(plan.current.find((planned) => planned.caseLabel)?.caseLabel ?? null);
+  }, []);
+
+  /** Scramble: drop a fresh random sequence on with no animation, then solve. */
+  const scramble = useCallback(() => {
+    if (reduceMotion) return;
+    window.clearTimeout(stepTimer.current);
+    busy.current = false;
+
+    const moves = randomScramble();
+    setScrambleSeq(moves);
+    for (const move of moves) bakeMove(move, 1, false);
+    planSolve();
+    setClock(0);
+    stepTimer.current = window.setTimeout(pump, 550);
+  }, [bakeMove, planSolve, pump, reduceMotion]);
+
+  useEffect(() => {
+    const cube = cubeRef.current;
+    const pivot = pivotRef.current;
+    if (!cube || !pivot) return;
+    const step = Number.parseFloat(getComputedStyle(cube).getPropertyValue('--cube-step')) || 74;
+    runtimes.current = Array.from(cube.querySelectorAll<HTMLDivElement>('.xp-cubelet')).map((el) => {
+      const x = Number(el.dataset.x);
+      const y = Number(el.dataset.y);
+      const z = Number(el.dataset.z);
+      const matrix = new DOMMatrix().translate(x * step, y * step, z * step);
+      el.style.transform = matrix.toString();
+      return { el, x, y, z, matrix };
+    });
+    applied.current = 0;
+    cubeState.current = solvedState();
+
+    // start fully scrambled on a fresh random sequence
+    if (!reduceMotion) {
+      const moves = randomScramble();
+      setScrambleSeq(moves);
+      for (const move of moves) bakeMove(move, 1, false);
+      planSolve();
+    }
+
+    // and begin solving the first time the chapter is actually on screen
+    const section = sectionRef.current;
+    let observer: IntersectionObserver | undefined;
+    if (section && !reduceMotion) {
+      observer = new IntersectionObserver(([entry]) => {
+        if (!entry?.isIntersecting) return;
+        observer?.disconnect();
+        stepTimer.current = window.setTimeout(pump, 400);
+      }, { threshold: 0.35 });
+      observer.observe(section);
+    }
+
+    return () => {
+      observer?.disconnect();
+      window.clearTimeout(stepTimer.current);
+      window.clearTimeout(finishTimer.current);
+      frames.current.forEach(cancelAnimationFrame);
+      frames.current = [];
+      Array.from(pivot.children).forEach((child) => cube.insertBefore(child, pivot));
+      pivot.classList.remove('is-turning');
+      pivot.style.transform = '';
+      runtimes.current.forEach((item) => { item.el.style.transform = ''; });
+      runtimes.current = [];
+      busy.current = false;
+    };
+  }, [bakeMove, planSolve, pump, reduceMotion]);
+
+  /**
+   * Drag to look around. The view angle lives in CSS variables on the cube
+   * element, so turning a layer and orbiting the whole cube never fight over
+   * the same transform.
+   */
+  const view = useRef({ rx: -26, ry: 36, x: 0, y: 0, dragging: false });
+  const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    view.current.dragging = true;
+    view.current.x = event.clientX;
+    view.current.y = event.clientY;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+  const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!view.current.dragging || !cubeRef.current) return;
+    cubeRef.current.classList.remove('is-auto-orienting');
+    view.current.ry += (event.clientX - view.current.x) * 0.45;
+    // stop short of the poles, where a horizontal drag stops meaning anything
+    view.current.rx = Math.min(80, Math.max(-80, view.current.rx - (event.clientY - view.current.y) * 0.45));
+    view.current.x = event.clientX;
+    view.current.y = event.clientY;
+    cubeRef.current.style.setProperty('--cube-rx', `${view.current.rx}deg`);
+    cubeRef.current.style.setProperty('--cube-ry', `${view.current.ry}deg`);
+  }, []);
+  const endDrag = useCallback(() => { view.current.dragging = false; }, []);
+
+  const coordinates: Array<[number, number, number]> = [];
+  for (let x = -1; x <= 1; x += 1) for (let y = -1; y <= 1; y += 1) for (let z = -1; z <= 1; z += 1) coordinates.push([x, y, z]);
+
+  // The solve, grouped into its CFOP stages (consecutive same-stage moves are
+  // one run), each move tagged with its position so the render can light up
+  // whatever has already been played.
+  const stageGroups = useMemo(() => {
+    const groups: Array<{ stage: StageName; caseLabel?: string; moves: Array<{ move: CubeMove; index: number }> }> = [];
+    planMoves.forEach((planned, index) => {
+      const last = groups[groups.length - 1];
+      if (last && last.stage === planned.stage) {
+        last.moves.push({ move: planned.move, index });
+        last.caseLabel ??= planned.caseLabel;
+      } else groups.push({ stage: planned.stage, caseLabel: planned.caseLabel, moves: [{ move: planned.move, index }] });
+    });
+    return groups;
+  }, [planMoves]);
+
+  return (
+    <section ref={sectionRef} className="xp-cube-chapter" aria-labelledby="cube-title">
+      <div className="xp-cube-frame">
+        <div className="xp-cube-copy">
+          <p className="xp-mono">Rubik's Cube Simulation</p>
+          <h3 id="cube-title">A solve you can watch think.</h3>
+          <p>Starts on a random scramble and solves it by CFOP — white cross, three F2L pairs, then ZBLS and ZBLL for the last layer. One quarter-turn at a time; drag the cube to look around.</p>
+          <div className="xp-cube-actions">
+            <button type="button" onClick={scramble} disabled={Boolean(reduceMotion)}>Scramble</button>
+            <a href="https://github.com/erichanwang/cube3d" target="_blank" rel="noreferrer">View source</a>
+          </div>
+        </div>
+        {scrambleSeq.length > 0 && (
+          <div className="xp-cube-scramble" aria-hidden="true">
+            <span className="xp-cube-tape-label">Scramble</span>
+            <span className="xp-cube-tape">
+              {scrambleSeq.map((move, i) => <b key={i}>{move.face}{move.prime ? '′' : ''}</b>)}
+            </span>
+          </div>
+        )}
+        <div
+          className="xp-cube-visual"
+          aria-hidden="true"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <div ref={cubeRef} className="xp-cube">
+            {coordinates.map(([x, y, z]) => (
+              <div key={`${x}-${y}-${z}`} className="xp-cubelet" data-x={x} data-y={y} data-z={z}>
+                {FACES.map((face) => <span key={face} className={`xp-cube-face ${face}`} style={{ backgroundColor: stickerColor(face, x, y, z) }} />)}
+              </div>
+            ))}
+            <div ref={pivotRef} className="xp-cube-pivot" />
+          </div>
+        </div>
+        {/* the CFOP solve, stage by stage: each move lights up as it is played */}
+        <div className="xp-cube-plan" aria-hidden="true">
+          {stageGroups.map((group, g) => (
+            <div key={g} className={`xp-cube-plan-row${stage === group.stage && !solved ? ' is-active' : ''}`}>
+              <span className="xp-cube-plan-stage">{group.stage}{group.caseLabel ? ` · ${group.caseLabel}` : ''}</span>
+              <span className="xp-cube-plan-moves">
+                {group.moves.map(({ move, index }) => (
+                  <b key={index} className={index < moveCount ? 'is-done' : index === moveCount ? 'is-now' : ''}>
+                    {move.face}{move.prime ? '′' : ''}
+                  </b>
+                ))}
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="xp-cube-readout" aria-hidden="true">
+          {/* the clock tracks the solve rather than the scroll, so it always
+              reads 0.00 unsolved and the full time on the last quarter-turn */}
+          <b>{clock.toFixed(2)}s</b>
+          <span>{String(moveCount).padStart(2, '0')} / {planLength} moves</span>
+          <span>{solved ? 'Solved' : stage ? `${stage}${stage === 'ZBLL' && caseLabel ? ` · ${caseLabel}` : ''}` : 'Ready'}</span>
+        </p>
+      </div>
+    </section>
+  );
+}

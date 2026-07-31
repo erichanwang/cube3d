@@ -1,0 +1,104 @@
+:root {
+  --xp-bg: #08090b;
+  --xp-surface: #101216;
+  --xp-text: #f7f7f5;
+  --xp-secondary: rgba(247, 247, 245, .68);
+  --xp-muted: rgba(247, 247, 245, .48);
+  --xp-border: rgba(247, 247, 245, .12);
+  --xp-blue: #5a86ef;
+  color-scheme: dark;
+  background: var(--xp-bg);
+  color: var(--xp-text);
+  font-family: system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html { background: var(--xp-bg); color-scheme: dark; }
+body { width: 100%; min-width: 320px; margin: 0; overflow-x: clip; background: var(--xp-bg); color: var(--xp-text); }
+button, a { font: inherit; }
+a { color: inherit; }
+::selection { background: rgba(79,124,255,.35); color: var(--xp-text); }
+/* the cube chapter is a snap stop like the project rows, or mandatory snap
+   jumps straight over it from the project before to the one after */
+.xp-cube-chapter { position: relative; margin: 0; border-bottom: 1px solid var(--xp-border);
+  scroll-snap-align: center; scroll-snap-stop: always; }
+.xp-cube-frame { display: grid; grid-template-rows: auto auto 1fr auto; align-items: center; overflow: hidden; padding: clamp(24px, 4vh, 44px) 0; }
+/* scramble notation above the cube */
+.xp-cube-scramble { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 3px 8px; width: min(100%, 640px); margin: 2px auto 2px; }
+.xp-cube-tape-label { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
+.xp-cube-tape { display: flex; flex-wrap: wrap; gap: 3px 7px; }
+.xp-cube-tape b { color: var(--xp-secondary); font: 400 11px 'DM Mono', monospace; font-weight: 400; }
+/* the CFOP solve, stage by stage, below the cube */
+.xp-cube-plan { display: grid; gap: 4px; width: min(100%, 680px); margin: 4px auto 0; }
+.xp-cube-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 12px; align-items: baseline;
+  opacity: .45; transition: opacity 220ms ease; }
+.xp-cube-plan-row.is-active { opacity: 1; }
+.xp-cube-plan-stage { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .09em; }
+.xp-cube-plan-moves { display: flex; flex-wrap: wrap; gap: 3px 7px; }
+.xp-cube-plan-moves b { color: var(--xp-muted); font: 400 11px 'DM Mono', monospace; transition: color 140ms ease; }
+.xp-cube-plan-moves b.is-done { color: var(--xp-secondary); }
+.xp-cube-plan-moves b.is-now { color: var(--xp-text); text-shadow: 0 0 9px rgba(79,124,255,.7); }
+.xp-cube-copy { position: relative; z-index: 2; max-width: 420px; padding-top: 8px; }
+.xp-cube-copy > .xp-mono { margin: 0; color: var(--xp-blue); font-size: 11px; }
+.xp-cube-copy h3 { margin: 8px 0 0; font-size: clamp(26px, 2.6vw, 38px); line-height: 1; letter-spacing: -.04em; }
+.xp-cube-copy > p:not(.xp-mono) { margin: 10px 0 0; color: var(--xp-secondary); font-size: 13px; line-height: 1.55; }
+.xp-cube-actions { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+.xp-cube-actions button { min-height: 38px; padding: 0 16px; border: 1px solid var(--xp-border);
+  background: var(--xp-surface); color: var(--xp-text); cursor: pointer;
+  font: 600 12px 'DM Mono', monospace; transition: border-color 160ms ease, background 160ms ease; }
+.xp-cube-actions button:hover { border-color: rgba(90,134,239,.6); background: rgba(79,124,255,.1); }
+.xp-cube-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.xp-cube-copy a { display: inline-flex; color: var(--xp-text); font-size: 12px; text-underline-offset: 4px; }
+.xp-cube-visual { position: relative; display: grid; min-height: 340px; place-items: center; perspective: 1000px;
+  cursor: grab; touch-action: none; }
+.xp-cube-visual:active { cursor: grabbing; }
+.xp-cube {
+  --cubelet: 66px;
+  --cube-step: 70;
+  --cube-rx: -26deg;
+  --cube-ry: 36deg;
+  position: relative;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--cube-rx)) rotateY(var(--cube-ry)) rotateZ(2deg);
+}
+/* During F2L, the camera pans to the slot currently being inserted. Keeping
+   this transition on the whole cube leaves layer-turn animation independent. */
+.xp-cube.is-auto-orienting { transition: transform 520ms cubic-bezier(.2,.8,.2,1); }
+.xp-cubelet, .xp-cube-pivot { position: absolute; top: 0; left: 0; transform-style: preserve-3d; }
+.xp-cubelet { width: var(--cubelet); height: var(--cubelet); margin: calc(var(--cubelet) / -2); }
+/* a turn should ease out of the layer, not snap: overshoot-free but soft */
+.xp-cube-pivot { width: 0; height: 0; transition: transform var(--turn-duration, 280ms) cubic-bezier(.33,.02,.16,1); }
+.xp-cube-pivot.is-turning { will-change: transform; }
+/* Stickerless: the plastic IS the colour, filling the whole face edge to edge,
+   so a corner piece reads as a third of each of its three colours. Rounded with
+   only a hairline between pieces, matte (no sheen). */
+.xp-cube-face { position: absolute; inset: 0.5px; border: 0; border-radius: 15%;
+  backface-visibility: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.16); }
+.xp-cube-face.f { transform: translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-face.b { transform: rotateY(180deg) translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-face.r { transform: rotateY(90deg) translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-face.l { transform: rotateY(-90deg) translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-face.u { transform: rotateX(90deg) translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-face.d { transform: rotateX(-90deg) translateZ(calc(var(--cubelet) / 2)); }
+.xp-cube-readout { position: absolute; right: 0; bottom: 24px; display: grid; gap: 3px;
+  margin: 0; text-align: right; font-family: 'DM Mono', monospace; }
+.xp-cube-readout b { font-size: 26px; font-weight: 500; letter-spacing: -.02em; color: var(--xp-text);
+  font-variant-numeric: tabular-nums; }
+.xp-cube-readout span { font-size: 11px; color: var(--xp-muted); }
+
+@media (max-width: 1023px) {
+  .xp-cube { --cubelet: 60px; --cube-step: 64; }
+}
+@media (max-width: 767px) {
+  .xp-cube-chapter { margin-left: -16px; margin-right: -16px; }
+  .xp-cube-frame { padding: 44px 16px; }
+  .xp-cube-copy { padding-top: 24px; }
+  .xp-cube-visual { min-height: 350px; }
+  .xp-cube { --cubelet: 48px; --cube-step: 51; --cube-rx: -25deg; --cube-ry: 35deg;
+    transform: rotateX(var(--cube-rx)) rotateY(var(--cube-ry)) scale(.94); }
+  .xp-cube-readout { right: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
