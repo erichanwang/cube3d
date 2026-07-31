@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import type { CubeMove } from './types';
-import { applyMoves, solveStages, solvedState, type CubeState, type StageName } from './cubeSolver';
+import {
+  applyMoves,
+  solveStages,
+  solvedState,
+  CORNER_COORDS,
+  CROSS_EDGES,
+  EDGE_COORDS,
+  LL_EDGES,
+  SLOTS,
+  type CubeState,
+  type StageName,
+} from './cubeSolver';
 
 const FACE_KEYS = ['R', 'L', 'U', 'D', 'F', 'B'] as const;
 /** Faces that cancel or commute with each other, used to reject dud scrambles. */
@@ -43,6 +54,8 @@ interface PlannedMove { move: CubeMove; stage: StageName; slot?: number; caseLab
 const COLORS = { u: '#ffd51e', d: '#f1f3f1', f: '#08b45c', b: '#1a52dc', r: '#e11d2c', l: '#ff7a17' };
 /** Pace of the solve. The clock reports whatever the sequence actually takes. */
 const STEP_MS = 67;
+const STEP_PAUSE_MS = 180;
+const STAGE_PAUSE_MS = 650;
 const FACES = ['u', 'd', 'f', 'b', 'r', 'l'] as const;
 
 interface CubeletRuntime {
@@ -80,6 +93,19 @@ function stickerColor(face: typeof FACES[number], x: number, y: number, z: numbe
   return visible ? COLORS[face] : '#141519';
 }
 
+const coordinateKey = (coordinate: readonly number[]) => coordinate.join(',');
+
+function stageKey(planned: PlannedMove | undefined) {
+  if (!planned) return '';
+  return `${planned.stage}:${planned.stage === 'F2L' ? planned.slot ?? -1 : ''}`;
+}
+
+/** Derived from the slot coordinates: keep the active pair's side facing the viewer. */
+const SLOT_YAWS = SLOTS.map(({ corner }) => {
+  const [x, , z] = CORNER_COORDS[corner]!;
+  return 36 + (x === 1 ? (z === 1 ? 0 : 90) : (z === 1 ? -90 : 180));
+});
+
 export function RubiksChapter() {
   const sectionRef = useRef<HTMLElement>(null);
   const cubeRef = useRef<HTMLDivElement>(null);
@@ -112,6 +138,30 @@ export function RubiksChapter() {
   // the scramble sits above the cube, the CFOP solve moves below it.
   const [scrambleSeq, setScrambleSeq] = useState<CubeMove[]>([]);
   const [planMoves, setPlanMoves] = useState<PlannedMove[]>([]);
+
+  /** Highlight the physical pieces for the stage currently being executed. */
+  const highlightTarget = useCallback((planned: PlannedMove | undefined) => {
+    const cube = cubeRef.current;
+    if (!cube) return;
+    const targets = new Set<string>();
+    if (planned?.stage === 'Cross') {
+      CROSS_EDGES.forEach((piece) => targets.add(coordinateKey(EDGE_COORDS[piece]!)));
+    } else if (planned?.stage === 'F2L' && planned.slot !== undefined) {
+      const slot = SLOTS[planned.slot]!;
+      targets.add(coordinateKey(CORNER_COORDS[slot.corner]!));
+      targets.add(coordinateKey(EDGE_COORDS[slot.edge]!));
+    } else if (planned?.stage === 'ZBLS') {
+      LL_EDGES.forEach((piece) => targets.add(coordinateKey(EDGE_COORDS[piece]!)));
+    }
+    cube.querySelectorAll<HTMLElement>('.xp-cubelet').forEach((cubelet) => {
+      const key = coordinateKey([
+        Number(cubelet.dataset.x),
+        Number(cubelet.dataset.y),
+        Number(cubelet.dataset.z),
+      ]);
+      cubelet.classList.toggle('is-highlighted', targets.has(key));
+    });
+  }, []);
   /**
    * The cube the solver reasons about, kept in step with the DOM one turn for
    * turn. Solving from this rather than from "solved plus the scramble I just
@@ -187,7 +237,7 @@ export function RubiksChapter() {
       return;
     }
     if (planned.slot === visualSlot.current) return;
-    const yaw = [36, 126, -54, 216][planned.slot] ?? 36;
+    const yaw = SLOT_YAWS[planned.slot] ?? 36;
     visualSlot.current = planned.slot;
     cube.classList.add('is-auto-orienting');
     cube.style.setProperty('--cube-ry', `${yaw}deg`);
@@ -200,6 +250,7 @@ export function RubiksChapter() {
     busy.current = true;
     applied.current += 1;
     setStage(planned.stage);
+    highlightTarget(planned);
     orientToSlot(planned);
     bakeMove(planned.move, 1, !document.hidden, () => {
       setMoveCount(applied.current);
@@ -208,10 +259,16 @@ export function RubiksChapter() {
         isPlayingRef.current = false;
         setIsPlaying(false);
       } else if (isPlayingRef.current) {
-        stepTimer.current = window.setTimeout(pump, STEP_MS);
+        const next = plan.current[applied.current];
+        const stageChanged = stageKey(next) !== stageKey(planned);
+        const pause = stageChanged ? STAGE_PAUSE_MS : STEP_PAUSE_MS;
+        setStage(next?.stage ?? null);
+        highlightTarget(next);
+        orientToSlot(next);
+        stepTimer.current = window.setTimeout(pump, STEP_MS + pause);
       }
     });
-  }, [bakeMove, orientToSlot, reduceMotion]);
+  }, [bakeMove, highlightTarget, orientToSlot, reduceMotion]);
 
   /* Stop scheduled playback and finish the current visual turn synchronously. */
   const stopAndFlush = useCallback(() => {
@@ -227,9 +284,12 @@ export function RubiksChapter() {
   const updateReadout = useCallback((cursor: number) => {
     const next = plan.current[cursor];
     setMoveCount(cursor);
-    setStage(next?.stage ?? (cursor > 0 ? plan.current[cursor - 1]?.stage ?? null : null));
+    const target = next ?? (cursor > 0 ? plan.current[cursor - 1] : undefined);
+    setStage(target?.stage ?? null);
     setCaseLabel(plan.current.find((planned) => planned.caseLabel)?.caseLabel ?? null);
-  }, []);
+    highlightTarget(target);
+    orientToSlot(target);
+  }, [highlightTarget, orientToSlot]);
 
   const stepForward = useCallback(() => {
     if (reduceMotion) return;
@@ -239,12 +299,14 @@ export function RubiksChapter() {
     if (!planned) return;
     busy.current = true;
     applied.current += 1;
+    setStage(planned.stage);
+    highlightTarget(planned);
     orientToSlot(planned);
     bakeMove(planned.move, 1, true, () => {
       updateReadout(applied.current);
       busy.current = false;
     });
-  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+  }, [bakeMove, highlightTarget, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
 
   const stepBackward = useCallback(() => {
     if (reduceMotion) return;
@@ -253,13 +315,14 @@ export function RubiksChapter() {
     const planned = plan.current[applied.current - 1];
     if (!planned) return;
     applied.current -= 1;
+    highlightTarget(plan.current[applied.current]);
     orientToSlot(plan.current[applied.current]);
     busy.current = true;
     bakeMove(planned.move, -1, true, () => {
       updateReadout(applied.current);
       busy.current = false;
     });
-  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+  }, [bakeMove, highlightTarget, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
 
   const seekTo = useCallback((target: number) => {
     if (reduceMotion) return;
@@ -268,6 +331,7 @@ export function RubiksChapter() {
     while (applied.current < clamped) {
       const planned = plan.current[applied.current];
       if (!planned) break;
+      highlightTarget(planned);
       orientToSlot(planned);
       applied.current += 1;
       bakeMove(planned.move, 1, false);
@@ -278,10 +342,8 @@ export function RubiksChapter() {
       applied.current -= 1;
       bakeMove(planned.move, -1, false);
     }
-    visualSlot.current = null;
     updateReadout(applied.current);
-    orientToSlot(plan.current[applied.current]);
-  }, [bakeMove, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
+  }, [bakeMove, highlightTarget, orientToSlot, reduceMotion, stopAndFlush, updateReadout]);
 
   const togglePlayback = useCallback(() => {
     if (reduceMotion || solved) return;
@@ -316,6 +378,7 @@ export function RubiksChapter() {
   const scramble = useCallback(() => {
     if (reduceMotion) return;
     stopAndFlush();
+    highlightTarget(undefined);
 
     const moves = randomScramble();
     setScrambleSeq(moves);
@@ -325,7 +388,7 @@ export function RubiksChapter() {
     isPlayingRef.current = true;
     setIsPlaying(true);
     stepTimer.current = window.setTimeout(pump, 550);
-  }, [bakeMove, planSolve, pump, reduceMotion, stopAndFlush]);
+  }, [bakeMove, highlightTarget, planSolve, pump, reduceMotion, stopAndFlush]);
 
   useEffect(() => {
     const cube = cubeRef.current;
@@ -379,8 +442,9 @@ export function RubiksChapter() {
       busy.current = false;
       isPlayingRef.current = false;
       setIsPlaying(false);
+      highlightTarget(undefined);
     };
-  }, [bakeMove, planSolve, pump, reduceMotion]);
+  }, [bakeMove, highlightTarget, planSolve, pump, reduceMotion]);
 
   /**
    * Drag to look around. The view angle lives in CSS variables on the cube

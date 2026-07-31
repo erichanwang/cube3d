@@ -29,10 +29,10 @@ a { color: inherit; }
 .xp-cube-tape b { color: var(--xp-secondary); font: 400 11px 'DM Mono', monospace; font-weight: 400; }
 /* the CFOP solve, stage by stage, below the cube */
 .xp-cube-plan { display: grid; gap: 4px; width: min(100%, 680px); margin: 4px auto 0 max(0px, calc((100% - 680px) / 2 - 48px)); }
-.xp-cube-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 12px; align-items: baseline;
+.xp-cube-plan-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px; align-items: baseline;
   opacity: 1; transition: opacity 220ms ease; }
 .xp-cube-plan-row.is-active { opacity: 1; }
-.xp-cube-plan-stage { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .09em; }
+.xp-cube-plan-stage { color: var(--xp-blue); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .09em; white-space: nowrap; }
 .xp-cube-plan-moves { display: flex; flex-wrap: wrap; gap: 3px 7px; }
 .xp-cube-plan-moves button { margin: 0; padding: 0; border: 0; background: transparent; color: var(--xp-text); cursor: pointer; font: 400 11px 'DM Mono', monospace; transition: color 140ms ease, opacity 140ms ease, text-shadow 140ms ease; }
 .xp-cube-plan-moves button:hover { color: var(--xp-blue); }
@@ -88,11 +88,17 @@ a { color: inherit; }
 .xp-cube-face.l { transform: rotateY(-90deg) translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.u { transform: rotateX(90deg) translateZ(calc(var(--cubelet) / 2)); }
 .xp-cube-face.d { transform: rotateX(-90deg) translateZ(calc(var(--cubelet) / 2)); }
+/* Yellow guide: the active physical pieces stay outlined while their stage is
+   working. ZBLL deliberately clears this class, because it is a whole-LL case. */
+.xp-cubelet.is-highlighted { filter: drop-shadow(0 0 4px rgba(255, 220, 34, .95)); }
+.xp-cubelet.is-highlighted .xp-cube-face {
+  box-shadow: inset 0 0 0 2px #ffe22e, inset 0 0 12px rgba(255, 214, 28, .35), 0 0 5px rgba(255, 214, 28, .7);
+}
 .xp-cube-readout { position: absolute; left: max(0px, calc((100% - 680px) / 2 - 48px)); bottom: 24px; display: grid; gap: 3px;
   margin: 0; text-align: left; font-family: 'DM Mono', monospace; }
 .xp-cube-readout b { font-size: 26px; font-weight: 500; letter-spacing: -.02em; color: var(--xp-text);
   font-variant-numeric: tabular-nums; }
-.xp-cube-readout span { font-size: 11px; color: var(--xp-muted); }
+.xp-cube-readout span { font-size: 11px; color: var(--xp-muted); white-space: nowrap; }
 
 @media (max-width: 1023px) {
   .xp-cube { --cubelet: 60px; --cube-step: 64; }
